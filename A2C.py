@@ -38,7 +38,7 @@ class ActorCritic:
         train_model = LSTM_SM(sess, state_dim, n_actions, n_steps=n_steps)
 
         action_onehot = tf.one_hot(action, n_actions, dtype=tf.float32)
-        chosen_action_prob = tf.reduce_sum(train_model.ap_out * action_onehot, 1)
+        chosen_action_prob = tf.reduce_sum(train_model.ap_out * action_onehot, 1)  # uses softmax output of network
 
 
 
@@ -56,23 +56,31 @@ class ActorCritic:
         entropy = tf.reduce_mean(cat_entropy(train_model.ap_out))
         loss = pg_loss + vf_coeff * vf_loss - entropy_coeff * entropy
 
-        # Compute gradient of the expected reward w.r.t. the policy parameters
-        with tf.variable_scope("model"):
-            params = tf.trainable_variables()
-        grads = tf.gradients(loss, params)
-        # clip gradients eventually
-        if max_grad_norm is not None:
-            # correct way of clipping but slower than clip_by_norm
-            grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
-        grads = zip(grads, params)
-        # grads = list(zip(grads, params))
+        # # Compute gradient of the expected reward w.r.t. the policy parameters
+        # with tf.variable_scope("model"):
+        #     params = tf.trainable_variables()
+        # grads = tf.gradients(loss, params)
+        # # clip gradients eventually
+        # if max_grad_norm is not None:
+        #     # correct way of clipping but slower than clip_by_norm
+        #     grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
+        # grads = zip(grads, params)
+        # # grads = list(zip(grads, params))
+
         optimizer = tf.train.RMSPropOptimizer(learning_rate=LR, decay=lr_decay, epsilon=fuzz_factor)
+        grads = optimizer.compute_gradients(loss)
         train_step = optimizer.apply_gradients(grads)
+
+        for g, v in grads:
+            tf.summary.histogram("%s-grad" % v.name, g)
+        tf.summary.scalar("pg_loss", pg_loss)
+        tf.summary.scalar("vf_loss", vf_loss)
+        tf.summary.scalar("entropy", entropy)
 
         _lr = LrDecay(v_init=lr, decay=lr_decay, n_step=total_timesteps)
 
         # training of training model
-        def trainActorCritic(obs, actions, discounted_rewards, values, dones, states):
+        def trainActorCritic(obs, actions, discounted_rewards, values, dones, states, stepidx):
             adv = discounted_rewards - values
             # enter advantage as one-hot vector
             # adv = [tf.one_hot(a, 1)*adv for a in actions]
@@ -105,6 +113,9 @@ class ActorCritic:
                                                                           train_step,
                                                                           train_model.ap_out],
                                                                          train_dict)
+            merge = tf.summary.merge_all()
+            summary_str = sess.run(merge, train_dict)
+            self.summary_writer.add_summary(summary_str, stepidx)
             return policy_loss, value_loss, policy_entropy, aprob
 
         # def save_params():
@@ -124,6 +135,14 @@ class ActorCritic:
         # self.save = save_params
         # self.load = load_params
         tf.global_variables_initializer().run(session=sess)
+
+        # # Merge all summaries into a single operator
+        # self.merged_summary_op = tf.summary.merge_all()
+
+        # Set the logs writer to the folder /home/mara/Desktop/logs/A2C
+        self.summary_writer = tf.summary.FileWriter('/home/mara/Desktop/logs/A2C', graph_def=sess.graph_def)
+
+
 
 
 class Simulation:
@@ -223,9 +242,10 @@ def learn(env, sess, seed, nsteps=5, total_timesteps=int(80e4), discount=0.5, en
         # Collect n-step trajectories
         obs, rewards, actions, values, dones, states = sim.run_nsteps()
 
-        # Update train_model
+        # Update train_model (and write summary to event file)
         policy_loss, value_loss, policy_entropy, a_dist = \
-            actor_critic.train(obs, actions, rewards, values, dones, states)
+            actor_critic.train(obs, actions, rewards, values, dones, states, nupdate)
+
         # print('action probs:')
         # print(ap[0], a)
 
@@ -248,39 +268,40 @@ if __name__ == "__main__":
     env = PLE(game, fps=30, display_screen=True, state_preprocessor=process_state)
 
     sess = tf.Session()
+
     seed = 1
     # Runt training
-    model = learn(env, sess, seed, max_grad_norm=5, nsteps=4)
+    model = learn(env, sess, seed, total_timesteps=500, max_grad_norm=5, nsteps=4)
 
-    plt.figure()
-    plt.plot([1, 2, 3])
-    plt.show()
-
-    # Evaluation of trained model
-    env = PLE(game, fps=30, display_screen=True, state_preprocessor=process_state)
-    n_eps = 500
-    rewards = eval_model(env, model, n_eps)
-
-    # Reward per episode
-    fig = plt.figure()
-    plt.title('Rewards per episodes')
-    xscale = range(0, n_eps)
-    plt.plot(xscale, rewards, label='AC')
-    plt.legend()
-    plt.ylabel('reward')
-    plt.xlabel('episode')
-
-    # Average reward of last N eps
-    fig = plt.figure()
-    N = 100  # moving average window
-    plt.title('Average Rewards (MAW = %s eps)' % N)
-    xscale = range(0, n_eps - N + 1)
-    plt.plot(xscale, np.convolve(rewards, np.ones((N,)) / N, mode='valid'), label='AC')
-    plt.legend()
-    plt.xlabel('episode')
-    plt.ylabel('reward')
-
-    print('Average total return:')
-    print('AC: %s' % np.mean(rewards))
-
-    plt.show()
+    # plt.figure()
+    # plt.plot([1, 2, 3])
+    # plt.show()
+    #
+    # # Evaluation of trained model
+    # env = PLE(game, fps=30, display_screen=True, state_preprocessor=process_state)
+    # n_eps = 500
+    # rewards = eval_model(env, model, n_eps)
+    #
+    # # Reward per episode
+    # fig = plt.figure()
+    # plt.title('Rewards per episodes')
+    # xscale = range(0, n_eps)
+    # plt.plot(xscale, rewards, label='AC')
+    # plt.legend()
+    # plt.ylabel('reward')
+    # plt.xlabel('episode')
+    #
+    # # Average reward of last N eps
+    # fig = plt.figure()
+    # N = 100  # moving average window
+    # plt.title('Average Rewards (MAW = %s eps)' % N)
+    # xscale = range(0, n_eps - N + 1)
+    # plt.plot(xscale, np.convolve(rewards, np.ones((N,)) / N, mode='valid'), label='AC')
+    # plt.legend()
+    # plt.xlabel('episode')
+    # plt.ylabel('reward')
+    #
+    # print('Average total return:')
+    # print('AC: %s' % np.mean(rewards))
+    #
+    # plt.show()
