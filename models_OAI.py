@@ -225,15 +225,14 @@ class CastaPolicy(object):
         X = tf.placeholder(tf.float32, ob_shape, name='Ob')  # obs
         with tf.variable_scope("model", reuse=reuse):
             activ = tf.nn.elu
-            h1 = activ(fc(X, 'pi_fc1', nh=64, init_scale=np.sqrt(2)))
+            h1 = activ(fc(X, 'pi_vf_fc1', nh=64, init_scale=np.sqrt(2)))
 
-            h2 = activ(fc(h1, 'pi_fc2', nh=64, init_scale=np.sqrt(2)))
-            h3 = activ(fc(h2, 'pi_fc3', nh=32, init_scale=np.sqrt(2)))
-            pi_logit = fc(h3, 'pi', nact, init_scale=0.01)
+            h2 = activ(fc(h1, 'pi_fc2', nh=32, init_scale=np.sqrt(2)))
+            pi_logit = fc(h2, 'pi', nact, init_scale=0.01)
             pi = tf.nn.softmax(pi_logit)
 
-            h4 = activ(fc(h1, 'vf_fc1', nh=64, init_scale=np.sqrt(2)))  # TODO add these layers
-            h5 = activ(fc(h4, 'vf_fc2', nh=32, init_scale=np.sqrt(2)))
+            # h4 = activ(fc(h1, 'vf_fc1', nh=64, init_scale=np.sqrt(2)))  # TODO add these layers
+            h5 = activ(fc(h1, 'vf_fc2', nh=32, init_scale=np.sqrt(2)))
             vf = fc(h5, 'vf', 1)[:, 0]
             logstd = tf.get_variable(name="logstd", shape=[1, nact],
                                      initializer=tf.zeros_initializer())

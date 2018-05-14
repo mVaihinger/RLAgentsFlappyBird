@@ -184,11 +184,12 @@ class Runner(object):
             self.epreturn = [self.epreturn[i] + rewards[i] for i in range(self.nenv)]
             self.states = states
             self.dones = dones
+
             for n, done in enumerate(dones):
                 if done:
                     if n == 0:
                         self.ep_idx += 1
-                    self.obs[n] = self.obs[n]*0
+                    self.obs[n] = self.obs[n]*0  # TODO how do they do this her in the paper?
                     # update tensorboard summary
                     if self.summary_writer is not None:
                         summary = tf.Summary()
@@ -224,8 +225,6 @@ class Runner(object):
                 rewards = discount_with_dones(rewards+[value], dones+[0], self.gamma)[:-1]
             else:
                 rewards = discount_with_dones(rewards, dones, self.gamma)
-
-            # print(rewards)  # TODO value prediction is super bad! And not improving.
             mb_rewards[n] = rewards
         mb_rewards = mb_rewards.flatten()
         mb_actions = mb_actions.flatten()
@@ -266,10 +265,10 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
     env.close()
 
 
-from run_a2c_utils import make_ple_env
+from run_ple_utils import make_ple_env
 if __name__ == '__main__':
 
     env = make_ple_env('FlappyBird-v1', num_env=3, seed=0)
-    learn(CastaPolicy, env, 0, nsteps=40, ent_coef=0.00000001, gamma=0.90, display_screen=True,
-          lr=1e-5, lrschedule='constant', max_grad_norm=5)
+    learn(CastaPolicy, env, 0, nsteps=50, vf_coef=0.2, ent_coef=1e-7, gamma=0.90, display_screen=True,
+          lr=5e-5, lrschedule='constant', max_grad_norm=0.01, log_interval=30)
     env.close()

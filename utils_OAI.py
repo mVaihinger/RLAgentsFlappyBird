@@ -28,6 +28,7 @@ def set_global_seeds(i):
     np.random.seed(i)
     random.seed(i)
 
+
 def make_session(num_cpu=None, make_default=False):
     """Returns a session that will use <num_cpu> CPU's only"""
     if num_cpu is None:
@@ -40,6 +41,7 @@ def make_session(num_cpu=None, make_default=False):
         return tf.InteractiveSession(config=tf_config)
     else:
         return tf.Session(config=tf_config)
+
 
 class CategoricalPd:
     def __init__(self, logits):
@@ -121,8 +123,8 @@ def ortho_init(scale=1.0):
 def fc(x, scope, nh, *, init_scale=1.0, init_bias=0.0):
     with tf.variable_scope(scope):
         nin = x.get_shape()[1].value
-        w = tf.get_variable("w", [nin, nh], initializer=ortho_init(init_scale))
-        b = tf.get_variable("b", [nh], initializer=tf.constant_initializer(init_bias))
+        w = tf.get_variable("w", [nin, nh], initializer=tf.random_uniform_initializer(-0.1, 0.1, 0))  # ortho_init(init_scale))
+        b = tf.get_variable("b", [nh], initializer=tf.random_uniform_initializer(-0.1, 0.1, 0))  # tf.constant_initializer(init_bias))
         return tf.matmul(x, w)+b
 
 def batch_to_seq(h, nbatch, nsteps, flat=False):
@@ -389,8 +391,8 @@ class ReplayBuffer:
     def size(self):
         return len(self._data.obs)
 
-def process_state(state):
-    return np.array(list(state.values()))  # np.array([ .... ])
+# def process_state(state):
+#     return np.array(list(state.values()))  # np.array([ .... ])
 
 
 def explained_variance(ypred,y):
@@ -408,19 +410,5 @@ def explained_variance(ypred,y):
     vary = np.var(y)
     return np.nan if vary==0 else 1 - np.var(y-ypred)/vary
 
-# ================================================================
-# Global session
-# ================================================================
 
-def make_session(num_cpu=None, make_default=False):
-    """Returns a session that will use <num_cpu> CPU's only"""
-    if num_cpu is None:
-        num_cpu = int(os.getenv('RCALL_NUM_CPU', multiprocessing.cpu_count()))
-    tf_config = tf.ConfigProto(
-        inter_op_parallelism_threads=num_cpu,
-        intra_op_parallelism_threads=num_cpu)
-    tf_config.gpu_options.allocator_type = 'BFC'
-    if make_default:
-        return tf.InteractiveSession(config=tf_config)
-    else:
-        return tf.Session(config=tf_config)
+
