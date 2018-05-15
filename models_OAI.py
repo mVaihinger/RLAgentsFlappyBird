@@ -352,3 +352,41 @@ class AcerLstmPolicy(object):
 # -------------------------------------------------------------------------------------------------
 #                                           DQN
 # -------------------------------------------------------------------------------------------------
+class DQN():
+    """
+    Deep Q Network class based on TensorFlow.
+    """
+    def __init__(self, sess, ob_space, num_actions, scope=None, reuse=False):
+        nd, = ob_space.shape
+        prefix = "target_" if (scope == "target") else ""
+        self.obs_in = tf.placeholder(shape=[None, nd], dtype=tf.float32,
+                                     name=prefix + "state_in")  # observations
+
+        # Network Architecture
+        # with tf.variable_scope(scope, reuse=reuse): # leads to error when assigning weights to target network
+        h1 = tf.layers.dense(self.obs_in,
+                             units=64,
+                             activation=tf.nn.relu,
+                             kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
+                             name='dqn_h1')
+        h2 = tf.layers.dense(h1,
+                             units=32,
+                             activation=tf.nn.relu,
+                             kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
+                             name='dqn_h2')
+        # Output: predicted Q values of each action
+        self.pred_out = tf.layers.dense(h2, num_actions, activation=None, kernel_initializer=None)
+
+        # tf.add_to_collection(tf.GraphKeys.TRAIN_OP, self.pred_out)
+
+        def predict(obs, dones, lstm_states):
+            """
+            Args:
+                sess: TensorFlow session
+                obs: array of observatons for which we want to predict the actions. [batch_size]
+            Return:
+                The prediction of the output tensor. [batch_size, n_valid_actions]
+            """
+            return sess.run(self.pred_out, feed_dict={self.obs_in: obs})
+
+        self.predict = predict

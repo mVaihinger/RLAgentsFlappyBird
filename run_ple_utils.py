@@ -12,7 +12,7 @@ from envs.vec_env import SubprocVecEnv
 from utils_OAI import set_global_seeds
 
 
-def make_ple_env(env_id, num_env, seed, start_index=0):
+def make_ple_envs(env_id, num_env, seed, start_index=0):
     """
     Create a monitored SubprocVecEnv for PLE.
     """
@@ -25,6 +25,12 @@ def make_ple_env(env_id, num_env, seed, start_index=0):
         return _thunk
     set_global_seeds(seed)
     return SubprocVecEnv([make_env(i + start_index) for i in range(num_env)])
+
+def make_ple_env(env_id, seed):
+    env = gym.make(env_id)
+    env.seed(seed)
+    set_global_seeds(seed)
+    return env
 
 def arg_parser():
     """
