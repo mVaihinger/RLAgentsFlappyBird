@@ -1,9 +1,7 @@
 import os
-import gym
 import random
 import numpy as np
 import tensorflow as tf
-from gym import spaces
 from collections import deque
 import multiprocessing
 
@@ -123,8 +121,8 @@ def ortho_init(scale=1.0):
 def fc(x, scope, nh, *, init_scale=1.0, init_bias=0.0):
     with tf.variable_scope(scope):
         nin = x.get_shape()[1].value
-        w = tf.get_variable("w", [nin, nh], initializer=tf.random_uniform_initializer(-0.1, 0.1, 0))  # ortho_init(init_scale))
-        b = tf.get_variable("b", [nh], initializer=tf.random_uniform_initializer(-0.1, 0.1, 0))  # tf.constant_initializer(init_bias))
+        w = tf.get_variable("w", [nin, nh], initializer=tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=0))  # ortho_init(init_scale))
+        b = tf.get_variable("b", [nh], initializer=tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=0))  # tf.constant_initializer(init_bias))
         return tf.matmul(x, w)+b
 
 def batch_to_seq(h, nbatch, nsteps, flat=False):

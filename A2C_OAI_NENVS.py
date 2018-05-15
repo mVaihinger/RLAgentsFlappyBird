@@ -145,7 +145,7 @@ class Runner(object):
         nd, = env.observation_space.shape
         self.nenv = nenv = env.num_envs
         self.batch_ob_shape = (nenv*nsteps, nd)
-        self.obs = np.zeros((nenv, nd), dtype=np.uint8)
+        self.obs = np.zeros((nenv, nd), dtype=np.float32)
         self.nc = None  # nc
         obs = env.reset()
         self.gamma = gamma
@@ -189,7 +189,7 @@ class Runner(object):
                 if done:
                     if n == 0:
                         self.ep_idx += 1
-                    self.obs[n] = self.obs[n]*0  # TODO how do they do this her in the paper?
+                    self.obs[n] = self.obs[n]*0
                     # update tensorboard summary
                     if self.summary_writer is not None:
                         summary = tf.Summary()
@@ -232,7 +232,8 @@ class Runner(object):
         mb_masks = mb_masks.flatten()
         return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values
 
-def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, log_interval=100, display_screen=False):
+def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5,
+          lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, log_interval=100):
     tf.reset_default_graph()
     set_global_seeds(seed)
 
@@ -265,10 +266,10 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
     env.close()
 
 
-from run_ple_utils import make_ple_env
+from run_ple_utils import make_ple_envs
 if __name__ == '__main__':
-
-    env = make_ple_env('FlappyBird-v1', num_env=3, seed=0)
-    learn(CastaPolicy, env, 0, nsteps=50, vf_coef=0.2, ent_coef=1e-7, gamma=0.90, display_screen=True,
+    seed = 1
+    env = make_ple_envs('FlappyBird-v1', num_env=3, seed=seed)
+    learn(CastaPolicy, env, seed=seed, nsteps=50, vf_coef=0.2, ent_coef=1e-7, gamma=0.90,
           lr=5e-5, lrschedule='constant', max_grad_norm=0.01, log_interval=30)
     env.close()
