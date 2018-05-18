@@ -9,9 +9,8 @@ import numpy as np
 import tensorflow as tf
 import logger
 
-from models_OAI import MlpPolicy, FCPolicy, CastaPolicy
 from utils_OAI import Scheduler, make_path, find_trainable_variables, make_session, set_global_seeds
-from utils_OAI import cat_entropy, mse, explained_variance
+from utils_OAI import cat_entropy, mse, explained_variance, normalize_obs
 from utils_OAI import discount_with_dones
 
 DATE = str(datetime.datetime.today())
@@ -86,6 +85,7 @@ class Model(object):
         self.summary_step = tf.summary.merge_all()
 
         lr = Scheduler(v=lr, nvalues=total_timesteps, schedule=lrschedule)
+        saver = tf.train.Saver()
 
         def train(obs, states, rewards, masks, actions, values):
             advs = rewards - values
@@ -108,10 +108,12 @@ class Model(object):
 
             return policy_loss, value_loss, policy_entropy, ap
 
-        def save(save_path):
-            ps = sess.run(params)
-            make_path(save_path)
-            joblib.dump(ps, save_path)
+        def save(save_path, f_name):
+            gs = sess.run(self.global_step)
+            saver.save(sess, os.path.join(save_path, f_name), global_step=gs)
+            # ps = sess.run(params)
+            # make_path(save_path)
+            # joblib.dump(ps, os.path.join(save_path, f_name))
 
         def load(load_path):
             loaded_params = joblib.load(load_path)
@@ -175,10 +177,14 @@ class Runner(object):
             obs, rewards, dones, _ = self.env.step(actions)
             # obs, rewards, dones, _ = self.env.step(actions)
 
+            # rewards = [rewards[i] - 1e-5 for i in range(len(rewards))]
+            obs = normalize_obs(obs)
+            # print(obs)
+
             # render only every i-th episode
             if self.show_interval != 0:
                 if self.ep_idx % self.show_interval == 0:
-                    env.render()
+                    self.env.render()
 
             self.eplength = [self.eplength[i] + 1 for i in range(self.nenv)]
             self.epreturn = [self.epreturn[i] + rewards[i] for i in range(self.nenv)]
@@ -233,7 +239,7 @@ class Runner(object):
         return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values
 
 def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5,
-          lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, log_interval=100):
+          lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, log_interval=100, save_interval=1000):
     tf.reset_default_graph()
     set_global_seeds(seed)
 
@@ -246,12 +252,16 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
     sum_write = model.get_summary_writer()
     runner = Runner(env, model, nsteps=nsteps, gamma=gamma, show_interval=30, summary_writer=sum_write)
 
+    saver = tf.train.Saver()
+
     nbatch = nenvs*nsteps
     tstart = time.time()
     for update in range(1, total_timesteps//nbatch+1):
         obs, states, rewards, masks, actions, values = runner.run()
         policy_loss, value_loss, policy_entropy, ap = model.train(obs, states, rewards, masks, actions, values)
         print(ap)
+        if update % save_interval == 0:
+            model.save(LOG_FILE, 'inter_model')
         nseconds = time.time()-tstart
         fps = int((update*nbatch)/nseconds)
         if update % log_interval == 0 or update == 1:
@@ -263,13 +273,16 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
             # logger.record_tabular("value_loss", float(value_loss))
             # logger.record_tabular("explained_variance", float(ev))
             # logger.dump_tabular()
-    env.close()
+    model.save(LOG_FILE, 'final_model')
+    # env.close()
 
 
-from run_ple_utils import make_ple_envs
+from run_ple_utils import make_ple_envs  #, arg_parser
+from models_OAI import MlpPolicy, FCPolicy, CastaPolicy, LargerMLPPolicy
 if __name__ == '__main__':
     seed = 1
     env = make_ple_envs('FlappyBird-v1', num_env=3, seed=seed)
-    learn(CastaPolicy, env, seed=seed, nsteps=50, vf_coef=0.2, ent_coef=1e-7, gamma=0.90,
-          lr=5e-5, lrschedule='constant', max_grad_norm=0.01, log_interval=30)
+    learn(LargerMLPPolicy, env, seed=seed, nsteps=60, vf_coef=0.2, ent_coef=1e-7, gamma=0.90,
+          lr=5e-4, lrschedule='constant', max_grad_norm=0.01, log_interval=30, save_interval=1000,
+          total_timesteps=int(1e7))
     env.close()
