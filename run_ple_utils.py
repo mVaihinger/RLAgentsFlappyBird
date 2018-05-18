@@ -40,7 +40,7 @@ def arg_parser():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--env', help='environment ID', default='FlappyBird-v1')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
-    parser.add_argument('--num-timesteps', type=int, default=int(10e6))
+    parser.add_argument('--total_timesteps', help='Total number of env steps', type=int, default=int(10e6))
     return parser
 
 
