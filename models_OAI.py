@@ -133,7 +133,7 @@ class FCPolicy(object):
         nd, = ob_shape
         ob_shape = (nbatch, nd)
         nact = len(ac_space)  # ac_space.n
-        X = tf.placeholder(tf.float32, ob_shape)  # obs
+        X = tf.placeholder(tf.float32, ob_shape, name='obs')  # obs
         with tf.variable_scope("model", reuse=reuse):
             h = fc_layers(X)  # nature_cnn(X)
             pi = fc(h, 'pi', nact, init_scale=0.01)
@@ -233,6 +233,58 @@ class CastaPolicy(object):
 
             # h4 = activ(fc(h1, 'vf_fc1', nh=64, init_scale=np.sqrt(2)))  # TODO add these layers
             h5 = activ(fc(h1, 'vf_fc2', nh=32, init_scale=np.sqrt(2)))
+            vf = fc(h5, 'vf', 1)[:, 0]
+            logstd = tf.get_variable(name="logstd", shape=[1, nact],
+                                     initializer=tf.zeros_initializer())
+
+        pdparam = tf.concat([pi, pi * 0.0 + logstd], axis=1)
+        # self.pdtype = make_pdtype(ac_space)
+        # self.pd = self.pdtype.pdfromflat(pdparam)
+        self.pd = CategoricalPd(pi_logit)  # pdparam
+        a0 = self.pd.sample()  # returns action index: 0,1
+        # a0 = np.random.choice(ac_space, p=pi)  # returns action value: 119,None
+        # a0 = random_choice(sess, np.ones(shape=(nbatch, nact)) * np.array(range(nact)).T, pi)
+        # neglogp0 = self.pd.neglogp(a0)
+
+        self.initial_state = None
+
+        def step(ob, *_args, **_kwargs):
+            a, v = sess.run([a0, vf], {X: ob})
+            return a, v, self.initial_state
+
+        def value(ob, *_args, **_kwargs):
+            return sess.run(vf, {X: ob})
+
+        self.X = X
+        self.pi = pi
+        self.vf = vf
+        self.step = step
+        self.value = value
+
+class LargerMLPPolicy(object):
+    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False):  # pylint: disable=W0613
+        # this method is called with nbatch = nenvs*nsteps
+
+        # nh, nw, nc = ob_space.shape
+        # ob_shape = (nbatch, nh, nw, nc)
+        # actdim = ac_space.shape[0]
+        # Todo check initialization
+        # Input and Output dimensions
+        nd, = ob_space.shape
+        ob_shape = (nbatch, nd)
+        nact = ac_space.n
+        X = tf.placeholder(tf.float32, ob_shape, name='Ob')  # obs
+        with tf.variable_scope("model", reuse=reuse):
+            h1 = tf.nn.relu6(fc(X, 'pi_vf_fc1', nh=64, init_scale=np.sqrt(2)))
+            h2 = tf.nn.relu6(fc(h1, 'pi_vf_fc2', nh=64, init_scale=np.sqrt(2)))
+
+            h3 = tf.nn.elu(fc(h2, 'pi_fc1', nh=64, init_scale=np.sqrt(2)))
+            h4 = tf.nn.tanh(fc(h3, 'pi_fc2', nh=64, init_scale=np.sqrt(2)))
+            pi_logit = fc(h4, 'pi', nact, init_scale=0.01)
+            pi = tf.nn.softmax(pi_logit)
+
+            # h4 = activ(fc(h1, 'vf_fc1', nh=64, init_scale=np.sqrt(2)))  # TODO add these layers
+            h5 = tf.nn.elu(fc(h2, 'vf_fc1', nh=64, init_scale=np.sqrt(2)))
             vf = fc(h5, 'vf', 1)[:, 0]
             logstd = tf.get_variable(name="logstd", shape=[1, nact],
                                      initializer=tf.zeros_initializer())
@@ -366,16 +418,21 @@ class DQN():
         # with tf.variable_scope(scope, reuse=reuse): # leads to error when assigning weights to target network
         h1 = tf.layers.dense(self.obs_in,
                              units=64,
-                             activation=tf.nn.relu,
+                             activation=tf.nn.relu6,
                              kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
                              name='dqn_h1')
         h2 = tf.layers.dense(h1,
-                             units=32,
-                             activation=tf.nn.relu,
+                             units=64,
+                             activation=tf.nn.relu6,
                              kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
                              name='dqn_h2')
+        h3 = tf.layers.dense(h2,
+                            units=64,
+                            activation=tf.nn.elu,
+                            kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
+                            name='dqn_h3')
         # Output: predicted Q values of each action
-        self.pred_out = tf.layers.dense(h2, num_actions, activation=None, kernel_initializer=None)
+        self.pred_out = tf.layers.dense(h3, num_actions, activation=None, kernel_initializer=None)
 
         # tf.add_to_collection(tf.GraphKeys.TRAIN_OP, self.pred_out)
 
