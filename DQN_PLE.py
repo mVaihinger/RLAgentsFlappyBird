@@ -10,7 +10,7 @@ import tensorflow as tf
 
 from models_OAI import DQN
 from utils_OAI import ReplayBuffer
-from utils_OAI import make_epsilon_greedy_policy
+from utils_OAI import make_epsilon_greedy_policy, normalize_obs
 from utils_OAI import Scheduler, make_path, find_trainable_variables, make_session, set_global_seeds
 
 # TODO: implement saving of checkpoints
@@ -216,6 +216,8 @@ def q_learning(env, seed, total_timesteps=int(1e8), gamma=0.95, epsilon=0.4, eps
             # done = True
             # Reset the current environment
             obs = env.reset()
+            obs = normalize_obs(obs)
+
             if write_summary:
                 summary = tf.Summary()
                 summary.value.add(tag='env/ep_return', simple_value=stats['episode_rewards'][i_episode])
@@ -248,6 +250,9 @@ def q_learning(env, seed, total_timesteps=int(1e8), gamma=0.95, epsilon=0.4, eps
         action_probs = policy([obs], epsilon)
         action = np.random.choice(np.arange(len(action_probs)), p=action_probs)
         next_obs, reward, done, _ = env.step(action)  # state is not resettet here..
+        reward -= 1e-5
+        next_obs = normalize_obs(next_obs)
+
         # reward = env.act(action_set[action])
         #
         # next_state = list(env.getGameState())
@@ -294,10 +299,10 @@ from run_ple_utils import make_ple_env
 if __name__ == '__main__':
 
     # Params
-    DISCOUNT = 0.5
-    EPSILON = 0.4
+    DISCOUNT = 0.90
+    EPSILON = 0.5
     EPS_DECAY = 0.995
-    MAX_REPLAY_BUF_SIZE = 1000
+    MAX_REPLAY_BUF_SIZE = 10000
     BATCH_SIZE = 50
     NUM_TRAIN_UPDATES = int(8e8)
     TARGET = None
@@ -308,7 +313,7 @@ if __name__ == '__main__':
 
     NUMENVS = 1
 
-    seed = 0
+    seed = 1
 
     env = make_ple_env('FlappyBird-v1', seed=0)
     q_learning(env, seed=seed,

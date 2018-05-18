@@ -121,9 +121,12 @@ def ortho_init(scale=1.0):
 def fc(x, scope, nh, *, init_scale=1.0, init_bias=0.0):
     with tf.variable_scope(scope):
         nin = x.get_shape()[1].value
-        w = tf.get_variable("w", [nin, nh], initializer=tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=0))  # ortho_init(init_scale))
-        b = tf.get_variable("b", [nh], initializer=tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=0))  # tf.constant_initializer(init_bias))
-        return tf.matmul(x, w)+b
+        # w = tf.get_variable("w", [nin, nh], initializer=tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=0))
+        # b = tf.get_variable("b", [nh], initializer=tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=0))
+        w = tf.get_variable("w", [nin, nh], initializer=ortho_init(init_scale))
+        b = tf.get_variable("b", [nh], initializer=tf.constant_initializer(init_bias))
+
+    return tf.matmul(x, w)+b
 
 def batch_to_seq(h, nbatch, nsteps, flat=False):
     if flat:
@@ -407,6 +410,16 @@ def explained_variance(ypred,y):
     assert y.ndim == 1 and ypred.ndim == 1
     vary = np.var(y)
     return np.nan if vary==0 else 1 - np.var(y-ypred)/vary
+
+
+def normalize_obs(obs):
+    scaling_values = [512, 7, 512, 512, 512, 512, 512, 512]
+    if len(obs.shape) == 1:
+        obs = [obs[j] / scaling_values[j] for j in range(len(obs))]
+    else:
+        for i in range(len(obs)):
+            obs[i] = [obs[i,j] / scaling_values[j] for j in range(len(obs[i]))]
+    return obs
 
 
 # -----------------------------------------------------------------------------
