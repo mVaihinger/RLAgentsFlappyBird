@@ -4,7 +4,7 @@ from gym import spaces
 from ple import PLE
 import numpy as np
 
-PIPE_GAP = 250
+PIPE_GAP = 150
 
 def process_state(state):
     return np.array(list(state.values()))  # np.array([ .... ])

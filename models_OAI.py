@@ -123,7 +123,7 @@ class LstmPolicy(object):
 
 class FCPolicy(object):
 
-    def __init__(self, sess, ob_shape, ac_space, nbatch, nsteps, reuse=False):  # pylint: disable=W0613
+    def __init__(self, sess, ob_shape, ac_space, nbatch, nsteps, units_per_hlayer, reuse=False):  # pylint: disable=W0613
         # this method is called with nbatch = nenvs*nsteps
 
         # nh, nw, nc = ob_space.shape  # no image but numerical values
@@ -136,7 +136,8 @@ class FCPolicy(object):
         X = tf.placeholder(tf.float32, ob_shape, name='obs')  # obs
         with tf.variable_scope("model", reuse=reuse):
             h = fc_layers(X)  # nature_cnn(X)
-            pi = fc(h, 'pi', nact, init_scale=0.01)
+            pi_logit = fc(h, 'pi', nact, init_scale=0.01)
+            pi = tf.nn.softmax(pi_logit)
             vf = fc(h, 'v', 1)[:,0]
 
         # self.pdtype = make_pdtype(ac_space)
@@ -156,12 +157,13 @@ class FCPolicy(object):
 
         self.X = X
         self.pi = pi
+        self.pi_logit =pi_logit
         self.vf = vf
         self.step = step
         self.value = value
 
 class MlpPolicy(object):
-    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False): #pylint: disable=W0613
+    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, units_per_hlayer, reuse=False): #pylint: disable=W0613
         # this method is called with nbatch = nenvs*nsteps
 
         # nh, nw, nc = ob_space.shape
@@ -206,12 +208,13 @@ class MlpPolicy(object):
 
         self.X = X
         self.pi = pi
+        self.pi_logit =pi_logit
         self.vf = vf
         self.step = step
         self.value = value
 
 class CastaPolicy(object):
-    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False):  # pylint: disable=W0613
+    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, units_per_hlayer, reuse=False):  # pylint: disable=W0613
         # this method is called with nbatch = nenvs*nsteps
 
         # nh, nw, nc = ob_space.shape
@@ -257,12 +260,13 @@ class CastaPolicy(object):
 
         self.X = X
         self.pi = pi
+        self.pi_logit =pi_logit
         self.vf = vf
         self.step = step
         self.value = value
 
 class LargerMLPPolicy(object):
-    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False):  # pylint: disable=W0613
+    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, units_per_hlayer, reuse=False):  # pylint: disable=W0613
         # this method is called with nbatch = nenvs*nsteps
 
         # nh, nw, nc = ob_space.shape
@@ -275,17 +279,17 @@ class LargerMLPPolicy(object):
         nact = ac_space.n
         X = tf.placeholder(tf.float32, ob_shape, name='Ob')  # obs
         with tf.variable_scope("model", reuse=reuse):
-            h1 = tf.nn.relu6(fc(X, 'pi_vf_fc1', nh=64, init_scale=np.sqrt(2)))
-            h2 = tf.nn.relu6(fc(h1, 'pi_vf_fc2', nh=64, init_scale=np.sqrt(2)))
+            h1 = tf.nn.relu6(fc(X, 'pi_vf_fc1', nh=units_per_hlayer[0]))  #, init_scale=np.sqrt(2)))
+            h2 = tf.nn.elu(fc(h1, 'pi_vf_fc2', nh=units_per_hlayer[1]))  #, init_scale=np.sqrt(2)))
 
-            h3 = tf.nn.elu(fc(h2, 'pi_fc1', nh=64, init_scale=np.sqrt(2)))
-            h4 = tf.nn.tanh(fc(h3, 'pi_fc2', nh=64, init_scale=np.sqrt(2)))
-            pi_logit = fc(h4, 'pi', nact, init_scale=0.01)
+            h3 = tf.nn.tanh(fc(h2, 'pi_fc1', nh=units_per_hlayer[2]))  #, init_scale=np.sqrt(2)))
+            # h4 = tf.nn.tanh(fc(h3, 'pi_fc2', nh=64))  #, init_scale=np.sqrt(2)))
+            pi_logit = fc(h3, 'pi', nact, init_scale=0.01)
             pi = tf.nn.softmax(pi_logit)
 
             # h4 = activ(fc(h1, 'vf_fc1', nh=64, init_scale=np.sqrt(2)))  # TODO add these layers
-            h5 = tf.nn.elu(fc(h2, 'vf_fc1', nh=64, init_scale=np.sqrt(2)))
-            vf = fc(h5, 'vf', 1)[:, 0]
+            # h5 = tf.nn.elu(fc(h2, 'vf_fc1', nh=64))  #, init_scale=np.sqrt(2)))
+            vf = fc(h2, 'vf', 1)[:, 0]
             logstd = tf.get_variable(name="logstd", shape=[1, nact],
                                      initializer=tf.zeros_initializer())
 
@@ -309,6 +313,7 @@ class LargerMLPPolicy(object):
 
         self.X = X
         self.pi = pi
+        self.pi_logit =pi_logit
         self.vf = vf
         self.step = step
         self.value = value
