@@ -59,9 +59,6 @@ class CategoricalPd:
         return tf.argmax(self.logits - tf.log(-tf.log(u)), axis=-1)
 
     def neglogp(self, x):
-        # return tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits, labels=x)
-        # Note: we can't use sparse_softmax_cross_entropy_with_logits because
-        #       the implementation does not allow second-order derivatives...
         one_hot_actions = tf.one_hot(x, self.logits.get_shape().as_list()[-1])
         return tf.nn.softmax_cross_entropy_with_logits(logits=self.logits, labels=one_hot_actions)
 
@@ -69,11 +66,19 @@ def sample(logits):
     noise = tf.random_uniform(tf.shape(logits))
     return tf.argmax(logits - tf.log(-tf.log(noise)), 1)
 
-def cat_entropy(logits):
+def stable_softmax(logits):
     a0 = logits - tf.reduce_max(logits, 1, keepdims=True)  # shift values
     ea0 = tf.exp(a0)
     z0 = tf.reduce_sum(ea0, 1, keepdims=True)
-    p0 = ea0 / z0  # map to values from 0 to <1
+    p0 = ea0 / z0
+    return p0
+
+def cat_entropy(logits):
+    # stable_softmax using logits as inputs
+    a0 = logits - tf.reduce_max(logits, 1, keepdims=True)  # shift values
+    ea0 = tf.exp(a0)
+    z0 = tf.reduce_sum(ea0, 1, keepdims=True)
+    p0 = ea0 / z0  # softmax output
     return tf.reduce_sum(p0 * (tf.log(z0) - a0), 1)
 
 def cat_entropy_softmax(p0):
@@ -121,10 +126,18 @@ def ortho_init(scale=1.0):
 def fc(x, scope, nh, *, init_scale=1.0, init_bias=0.0):
     with tf.variable_scope(scope):
         nin = x.get_shape()[1].value
-        # w = tf.get_variable("w", [nin, nh], initializer=tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=0))
-        # b = tf.get_variable("b", [nh], initializer=tf.random_uniform_initializer(minval=-0.1, maxval=0.1, seed=0))
-        w = tf.get_variable("w", [nin, nh], initializer=ortho_init(init_scale))
+        val = 0.1
+        # init_scale = 0.2
+        w = tf.get_variable("w", [nin, nh], initializer=tf.orthogonal_initializer(gain=init_scale))
+        # w = tf.get_variable("w", [nin, nh], initializer=tf.glorot_normal_initializer())
+        # w = tf.get_variable("w", [nin, nh], initializer=tf.glorot_uniform_initializer())
+
         b = tf.get_variable("b", [nh], initializer=tf.constant_initializer(init_bias))
+
+        # w = tf.get_variable("w", [nin, nh], initializer=tf.random_uniform_initializer(minval=-val, maxval=val, seed=0))
+        # b = tf.get_variable("b", [nh], initializer=tf.random_uniform_initializer(minval=-val, maxval=val, seed=0))
+        # w = tf.get_variable("w", [nin, nh], initializer=ortho_init(init_scale))
+        # b = tf.get_variable("b", [nh], initializer=tf.constant_initializer(init_bias))
 
     return tf.matmul(x, w)+b
 
@@ -314,6 +327,9 @@ class EpisodeStats:
             return np.mean(self.rewbuffer)
         else:
             return 0
+
+    def total_return_env(self, env_idx):
+        return
 
 
 # For ACER

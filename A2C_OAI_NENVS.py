@@ -8,21 +8,21 @@ import logging
 import numpy as np
 import tensorflow as tf
 import logger
-
+from collections import deque
 from utils_OAI import Scheduler, make_path, find_trainable_variables, make_session, set_global_seeds
 from utils_OAI import cat_entropy, mse, explained_variance, normalize_obs
 from utils_OAI import discount_with_dones
 
-DATE = str(datetime.datetime.today())
-LOG_FILE = os.path.join('/home/mara/Desktop/logs/A2C_OAI_NENVS', DATE)
+# DATE = str(datetime.datetime.today())
+# LOG_FILE = os.path.join('/home/mara/Desktop/logs/A2C_OAI_NENVS', DATE)
 
 class Model(object):
 
     def __init__(self, policy, ob_space, ac_space, nenvs, nsteps,
             ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5, lr=7e-4,
-            alpha=0.99, epsilon=1e-5, total_timesteps=int(80e6), lrschedule='linear',
-            log_interval=100):
-
+            alpha=0.99, epsilon=1e-5, units_per_hlayer=None, total_timesteps=int(80e6), lrschedule='linear',
+            log_interval=100, logdir=''):
+        print('logdir is:' + logdir)
         self.num_steps_trained = 0
         self.log_interval = log_interval
 
@@ -41,17 +41,19 @@ class Model(object):
         R = tf.placeholder(tf.float32, [nbatch])
         LR = tf.placeholder(tf.float32, [])
 
-        step_model = policy(sess, ob_space, ac_space, nenvs, 1, reuse=False)
-        train_model = policy(sess, ob_space, ac_space, nenvs*nsteps, nsteps, reuse=True)
+        step_model = policy(sess, ob_space, ac_space, nenvs, 1, units_per_hlayer, reuse=False)
+        train_model = policy(sess, ob_space, ac_space, nenvs*nsteps, nsteps, units_per_hlayer, reuse=True)
 
 
+        # Compute cross entropy loss between estimated distribution of action and 'true' distribution of actions
+        chosen_action_log_probs = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=train_model.pi_logit, labels=A)
 
-        neglogpac = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=train_model.pi, labels=A)
-
-        pg_loss = tf.reduce_mean(ADV * neglogpac) # minimize
+        pg_loss = tf.reduce_mean(ADV * chosen_action_log_probs) # minimize
         vf_loss = tf.reduce_mean(mse(tf.squeeze(train_model.vf), R))  # minimize
-        entropy = - tf.reduce_mean(cat_entropy(train_model.pi))  # maximize
+        entropy = - tf.reduce_mean(cat_entropy(train_model.pi_logit))  # maximize
         loss = pg_loss + entropy*ent_coef + vf_loss * vf_coef
+
+        vf = tf.squeeze(train_model.vf)
 
         # pg_loss = tf.reduce_sum(ADV * neglogpac)
         # entropy = -tf.reduce_sum(tf.nn.softmax(train_model.pi) * tf.nn.log_softmax(train_model.pi))
@@ -73,19 +75,23 @@ class Model(object):
         _train = [trainer.apply_gradients(grads),
                   self.global_step.assign_add(nbatch)]
 
-        for g, v in gradients:
-            if g is not None:
-                tf.summary.histogram("%s-grad" % v.name, g)
-        for p in params:
-            if p is not None:
-                tf.summary.histogram("train/%s" % p.name, p.value())
-        tf.summary.scalar("train/pg_loss", pg_loss)
-        tf.summary.scalar("train/vf_loss", vf_loss)
-        tf.summary.scalar("train/entropy", entropy)
-        self.summary_step = tf.summary.merge_all()
+        if log_interval > 0:
+            for g, v in gradients:
+                if g is not None:
+                    tf.summary.histogram("%s-grad" % v.name, g)
+            for p in params:
+                if p is not None:
+                    tf.summary.histogram("train/%s" % p.name, p.value())
+            tf.summary.scalar("train/pg_loss", pg_loss)
+            tf.summary.scalar("train/vf_loss", vf_loss)
+            tf.summary.scalar("train/entropy", entropy)
+            tf.summary.histogram("others/ADV", ADV)
+            tf.summary.histogram("others/neglocpac", chosen_action_log_probs)
+            tf.summary.histogram("others/vf", vf)
+            self.summary_step = tf.summary.merge_all()
 
         lr = Scheduler(v=lr, nvalues=total_timesteps, schedule=lrschedule)
-        saver = tf.train.Saver()
+        saver = tf.train.Saver(max_to_keep=7)
 
         def train(obs, states, rewards, masks, actions, values):
             advs = rewards - values
@@ -99,11 +105,11 @@ class Model(object):
                 [pg_loss, vf_loss, entropy, _train, train_model.pi, self.global_step],
                 td_map
             )
-            if self.num_steps_trained % self.log_interval == 0:
-            # if log_interval != 0 and self.num_steps_trained % self.log_interval == 0:
+            # TF summary logging
+            if log_interval > 0 and (self.num_steps_trained % self.log_interval == 0):
+                print('saved tf summary')
                 summary_str = sess.run(self.summary_step, td_map)
                 self.summary_writer.add_summary(tf.Summary.FromString(summary_str), global_step)
-
             self.num_steps_trained += 1
 
             return policy_loss, value_loss, policy_entropy, ap
@@ -132,8 +138,11 @@ class Model(object):
         self.load = load
         tf.global_variables_initializer().run(session=sess)
 
-        # Set the logs writer to the folder /tmp/tensorflow_logs
-        self.summary_writer = tf.summary.FileWriter(LOG_FILE, graph_def=sess.graph_def)
+        # Set the summary writer to write to the given logdir if logging is enabled
+        if log_interval > 0:
+            self.summary_writer = tf.summary.FileWriter(logdir, graph_def=sess.graph_def)
+        else:
+            self.summary_writer = None
 
     def get_summary_writer(self):
         return self.summary_writer
@@ -158,10 +167,13 @@ class Runner(object):
         # stats
         self.eplength = [0 for _ in range(nenv)]
         self.epreturn = [0 for _ in range(nenv)]
+        self.retbuffer = deque(maxlen=20*nenv)
+        self.avg_return_n_episodes = 0
+        self.max_return = 0
 
         # rendering
         self.show_interval = show_interval
-        self.ep_idx = 0
+        self.ep_idx = [0 for _ in range(nenv)]
 
         self.summary_writer = summary_writer
 
@@ -177,13 +189,13 @@ class Runner(object):
             obs, rewards, dones, _ = self.env.step(actions)
             # obs, rewards, dones, _ = self.env.step(actions)
 
-            # rewards = [rewards[i] - 1e-5 for i in range(len(rewards))]
+            rewards = [rewards[i] - 1e-5 for i in range(len(rewards))]
             obs = normalize_obs(obs)
             # print(obs)
 
             # render only every i-th episode
             if self.show_interval != 0:
-                if self.ep_idx % self.show_interval == 0:
+                if sum(self.ep_idx) % self.show_interval == 0:
                     self.env.render()
 
             self.eplength = [self.eplength[i] + 1 for i in range(self.nenv)]
@@ -191,26 +203,26 @@ class Runner(object):
             self.states = states
             self.dones = dones
 
-            for n, done in enumerate(dones):
+            # Check for terminal states in every env
+            for i, done in enumerate(dones):
                 if done:
-                    if n == 0:
-                        self.ep_idx += 1
-                    self.obs[n] = self.obs[n]*0
+                    self.ep_idx[i] += 1
+                    self.obs[i] = self.obs[i]*0
                     # update tensorboard summary
                     if self.summary_writer is not None:
                         summary = tf.Summary()
-                        summary.value.add(tag='envs/environment%s/episode_length' % n,
-                                          simple_value=self.eplength[n])
-                        summary.value.add(tag='envs/environment%s/episode_reward' % n,
-                                          simple_value=self.epreturn[n])
+                        summary.value.add(tag='envs/environment%s/episode_length' % i,
+                                          simple_value=self.eplength[i])
+                        summary.value.add(tag='envs/environment%s/episode_reward' % i,
+                                          simple_value=self.epreturn[i])
                         # summary.value.add(tag='environment/fps',
                         #                   simple_value=self.env.episode_length / self.env.episode_run_time)
-                        self.summary_writer.add_summary(summary, self.ep_idx)  #self.global_step.eval())
+                        self.summary_writer.add_summary(summary, self.ep_idx[i])  #self.global_step.eval())
                         self.summary_writer.flush()
-
-                    # print('env %s ended after %s steps with return %s' % (n, self.eplength[n], self.epreturn[n]))
-                    self.eplength[n] = 0
-                    self.epreturn[n] = 0
+                    self.retbuffer.append(self.epreturn[i])
+                    if self.epreturn[i] > self.max_return: self.max_return = self.epreturn[i]
+                    self.eplength[i] = 0
+                    self.epreturn[i] = 0
             self.obs = obs
             mb_rewards.append(rewards)
         mb_dones.append(self.dones)
@@ -236,10 +248,17 @@ class Runner(object):
         mb_actions = mb_actions.flatten()
         mb_values = mb_values.flatten()
         mb_masks = mb_masks.flatten()
-        return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values
 
-def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5,
-          lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, log_interval=100, save_interval=1000):
+        if len(self.retbuffer) > 0:
+            self.avg_return_n_episodes = np.mean(self.retbuffer)
+
+        return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values, self.avg_return_n_episodes
+
+def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01,
+          max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99,
+          units_per_hlayer=None, log_interval=100, logdir='/mnt/logs/A2C',
+          save_interval=1000, show_interval=0):
+    # TODO only use defaults values for arguments once and not again in model to ensure that default value is set only once.
     tf.reset_default_graph()
     set_global_seeds(seed)
 
@@ -247,21 +266,29 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
     ob_space = env.observation_space
     ac_space = env.action_space
 
-    model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nenvs=nenvs, nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
-        max_grad_norm=max_grad_norm, lr=lr, alpha=alpha, epsilon=epsilon, total_timesteps=total_timesteps, lrschedule=lrschedule)
+    model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nenvs=nenvs, nsteps=nsteps, ent_coef=ent_coef,
+                  vf_coef=vf_coef, max_grad_norm=max_grad_norm, lr=lr, alpha=alpha, epsilon=epsilon,
+                  units_per_hlayer=units_per_hlayer, total_timesteps=total_timesteps,
+                  lrschedule=lrschedule, log_interval=log_interval, logdir=logdir)
     sum_write = model.get_summary_writer()
-    runner = Runner(env, model, nsteps=nsteps, gamma=gamma, show_interval=30, summary_writer=sum_write)
-
-    saver = tf.train.Saver()
+    runner = Runner(env, model, nsteps=nsteps, gamma=gamma, show_interval=show_interval, summary_writer=sum_write)
 
     nbatch = nenvs*nsteps
     tstart = time.time()
-    for update in range(1, total_timesteps//nbatch+1):
-        obs, states, rewards, masks, actions, values = runner.run()
+    max_avg_ep_return = -5
+    for update in range(1, total_timesteps//nbatch + 1):
+        obs, states, rewards, masks, actions, values, avg_ep_return = runner.run()
         policy_loss, value_loss, policy_entropy, ap = model.train(obs, states, rewards, masks, actions, values)
-        print(ap)
-        if update % save_interval == 0:
-            model.save(LOG_FILE, 'inter_model')
+        # print(ap)
+
+        # Save network model if average return of last 20 * nenvs episodes is higher than threshold 30
+        # and at least 5 points higher than the recent maximum average return per 20 * nenvs episodes.
+        # print(avg_ep_return)
+        if avg_ep_return > -4.99 and avg_ep_return >= (max_avg_ep_return + 5):
+            max_avg_ep_return = avg_ep_return
+            model.save(logdir, 'inter_model', )
+        # if update % save_interval == 0:
+        #     model.save(logdir, 'inter_model', )  # save model not w.r.t to training step but depending on achieved result.
         nseconds = time.time()-tstart
         fps = int((update*nbatch)/nseconds)
         if update % log_interval == 0 or update == 1:
@@ -273,16 +300,34 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
             # logger.record_tabular("value_loss", float(value_loss))
             # logger.record_tabular("explained_variance", float(ev))
             # logger.dump_tabular()
-    model.save(LOG_FILE, 'final_model')
-    # env.close()
+    model.save(logdir, 'final_model')
 
+    # return np.mean(runner.retbuffer), np.var(runner.retbuffer), runner.max_return
 
 from run_ple_utils import make_ple_envs  #, arg_parser
 from models_OAI import MlpPolicy, FCPolicy, CastaPolicy, LargerMLPPolicy
 if __name__ == '__main__':
-    seed = 1
+    seed = 2
     env = make_ple_envs('FlappyBird-v1', num_env=3, seed=seed)
-    learn(LargerMLPPolicy, env, seed=seed, nsteps=60, vf_coef=0.2, ent_coef=1e-7, gamma=0.90,
-          lr=5e-4, lrschedule='constant', max_grad_norm=0.01, log_interval=30, save_interval=1000,
-          total_timesteps=int(1e7))
+    logdir = '/home/mara/Desktop/logs/A2C_OAI_NENVS'
+    logdir = os.path.join(logdir, str(datetime.datetime.today()))
+    learn(LargerMLPPolicy, env,
+           seed=seed,
+           nsteps=50,
+           vf_coef=0.2,
+           ent_coef=1e-7,
+           gamma=0.90,
+           lr=5e-4,
+           lrschedule='constant',
+           max_grad_norm=0.01,
+           log_interval=30,
+           save_interval=1000,
+           show_interval=30,
+           units_per_hlayer=(32,32,32),
+           total_timesteps=40000,  # int(1e7),
+           logdir=logdir)
+
+    # print('average performance: %s' % avg_perf)
+    # print('performance variance: %s' % var_perf)
+    # print('maximal return was: %s' % max_return)
     env.close()
