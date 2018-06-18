@@ -1,13 +1,12 @@
-import os
-import os.path as osp
+import os, sys
 import gym
 import time
 import datetime
-import joblib
+# import joblib
 import logging
 import numpy as np
 import tensorflow as tf
-import logger
+# import logger
 from collections import deque
 from utils_OAI import Scheduler, make_path, find_trainable_variables, make_session, set_global_seeds
 from utils_OAI import cat_entropy, mse, explained_variance, normalize_obs
@@ -19,10 +18,10 @@ from utils_OAI import discount_with_dones
 class Model(object):
 
     def __init__(self, policy, ob_space, ac_space, nenvs, nsteps,
-            ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5, lr=7e-4,
-            alpha=0.99, epsilon=1e-5, units_per_hlayer=None, total_timesteps=int(80e6), lrschedule='linear',
-            log_interval=100, logdir=''):
-        print('logdir is:' + logdir)
+                 ent_coef, vf_coef, max_grad_norm, lr, alpha, epsilon,
+                 units_per_hlayer, total_timesteps, lrschedule, log_interval, logdir):
+        self.logger = logging.getLogger(self.__module__ + "." + self.__class__.__name__)
+        self.logger.info('Set up A2C learning agent')
         self.num_steps_trained = 0
         self.log_interval = log_interval
 
@@ -41,9 +40,9 @@ class Model(object):
         R = tf.placeholder(tf.float32, [nbatch])
         LR = tf.placeholder(tf.float32, [])
 
-        step_model = policy(sess, ob_space, ac_space, nenvs, 1, units_per_hlayer, reuse=False)
+        eval_model = policy(sess, ob_space, ac_space, 1, 1, units_per_hlayer, reuse=False)
+        step_model = policy(sess, ob_space, ac_space, nenvs, 1, units_per_hlayer, reuse=tf.AUTO_REUSE)
         train_model = policy(sess, ob_space, ac_space, nenvs*nsteps, nsteps, units_per_hlayer, reuse=True)
-
 
         # Compute cross entropy loss between estimated distribution of action and 'true' distribution of actions
         chosen_action_log_probs = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=train_model.pi_logit, labels=A)
@@ -78,10 +77,10 @@ class Model(object):
         if log_interval > 0:
             for g, v in gradients:
                 if g is not None:
-                    tf.summary.histogram("%s-grad" % v.name, g)
+                    tf.summary.histogram("%s-grad" % v.name.replace(':', '_'), g)
             for p in params:
                 if p is not None:
-                    tf.summary.histogram("train/%s" % p.name, p.value())
+                    tf.summary.histogram("train/%s" % p.name.replace(':', '_'), p.value())
             tf.summary.scalar("train/pg_loss", pg_loss)
             tf.summary.scalar("train/vf_loss", vf_loss)
             tf.summary.scalar("train/entropy", entropy)
@@ -91,7 +90,14 @@ class Model(object):
             self.summary_step = tf.summary.merge_all()
 
         lr = Scheduler(v=lr, nvalues=total_timesteps, schedule=lrschedule)
-        saver = tf.train.Saver(max_to_keep=7)
+        # Adding these to collection so we can restore them again
+        tf.add_to_collection('inputs', eval_model.X)
+        tf.add_to_collection('pi', eval_model.pi)
+        tf.add_to_collection('pi_logit', eval_model.pi_logit)
+        tf.add_to_collection('val', eval_model.vf)
+        tf.add_to_collection('step', eval_model.ac)
+
+        tf.global_variables_initializer().run(session=sess)
 
         def train(obs, states, rewards, masks, actions, values):
             advs = rewards - values
@@ -107,26 +113,71 @@ class Model(object):
             )
             # TF summary logging
             if log_interval > 0 and (self.num_steps_trained % self.log_interval == 0):
-                print('saved tf summary')
+                self.logger.info('Save summary of network weights, grads and losses.')
                 summary_str = sess.run(self.summary_step, td_map)
                 self.summary_writer.add_summary(tf.Summary.FromString(summary_str), global_step)
             self.num_steps_trained += 1
 
             return policy_loss, value_loss, policy_entropy, ap
 
-        def save(save_path, f_name):
+        saver = tf.train.Saver(max_to_keep=7)
+
+        def save(f_name):
+            # test_run(20)
             gs = sess.run(self.global_step)
-            saver.save(sess, os.path.join(save_path, f_name), global_step=gs)
+            self.logger.info('Save network parameters of model at global step %s' % gs)
+            saver.save(sess, os.path.join(logdir, f_name), global_step=gs)
             # ps = sess.run(params)
             # make_path(save_path)
             # joblib.dump(ps, os.path.join(save_path, f_name))
 
         def load(load_path):
-            loaded_params = joblib.load(load_path)
-            restores = []
-            for p, loaded_p in zip(params, loaded_params):
-                restores.append(p.assign(loaded_p))
-            ps = sess.run(restores)
+            saver.restore(sess, load_path)
+
+            # loaded_params = joblib.load(load_path)
+            # restores = []
+            # for p, loaded_p in zip(params, loaded_params):
+            #     restores.append(p.assign(loaded_p))
+            # ps = sess.run(restores)
+
+        def test_run(n_eps):
+            env_test = make_ple_env('FlappyBird-v1', 2)
+            self.logger.debug('Evaluating eval_model before saving')
+            for _ in range(n_eps):
+
+                # Reset variables
+                obs = env_test.reset()
+                obs = normalize_obs(obs)
+                done = False
+                total_reward = 0
+
+                while not done:
+                    act, _, _ = eval_model.step([obs])
+                    obs, rew, done, _ = env_test.step(act[0])
+                    obs = normalize_obs(obs)
+                    total_reward += rew
+
+                self.logger.debug(total_reward)
+
+            envs_test = make_ple_envs('FlappyBird-v1', num_env=3, seed=2)
+            self.logger.debug('Evaluating step model before saving:')
+            # Reset variables
+            obs_test = envs_test.reset()
+            obs_test = normalize_obs(obs_test)
+
+            total_reward = [0,0,0]
+            idx = 0
+            rew = [0,0,0]
+            while idx < 20:
+                act, _, _ = step_model.step(obs_test, None, None)
+                obs_test, rew, done, _ = envs_test.step(act)
+                obs_test = normalize_obs(obs_test)
+                total_reward = [total_reward[i] + rew[i] for i in range(3)]
+                for i in range(3):
+                    if done[i]:
+                        idx += 1
+                        self.logger.debug('Env %s: %s' % (i,total_reward[i]))
+                        total_reward[i] = 0
 
         self.train = train
         self.train_model = train_model
@@ -136,7 +187,6 @@ class Model(object):
         self.initial_state = step_model.initial_state
         self.save = save
         self.load = load
-        tf.global_variables_initializer().run(session=sess)
 
         # Set the summary writer to write to the given logdir if logging is enabled
         if log_interval > 0:
@@ -151,6 +201,8 @@ class Model(object):
 class Runner(object):
 
     def __init__(self, env, model, nsteps=5, gamma=0.99, show_interval=0, summary_writer=None):
+        self.logger = logging.getLogger(self.__module__ + "." + self.__class__.__name__)
+        self.logger.info('Set up %s-step Runner' % nsteps)
         self.env = env
         self.model = model
         nd, = env.observation_space.shape
@@ -167,9 +219,9 @@ class Runner(object):
         # stats
         self.eplength = [0 for _ in range(nenv)]
         self.epreturn = [0 for _ in range(nenv)]
-        self.retbuffer = deque(maxlen=20*nenv)
-        self.avg_return_n_episodes = 0
-        self.max_return = 0
+        # self.retbuffer = deque(maxlen=1*nenv)
+        # self.avg_return_n_episodes = 0
+        self.max_return = 40  # threshold below which no model will be saved.
 
         # rendering
         self.show_interval = show_interval
@@ -187,18 +239,17 @@ class Runner(object):
             mb_values.append(values)
             mb_dones.append(self.dones)
             obs, rewards, dones, _ = self.env.step(actions)
-            # obs, rewards, dones, _ = self.env.step(actions)
 
             rewards = [rewards[i] - 1e-5 for i in range(len(rewards))]
             obs = normalize_obs(obs)
-            # print(obs)
+            self.logger.debug('Observations: %s' % obs)
 
             # render only every i-th episode
             if self.show_interval != 0:
                 if sum(self.ep_idx) % self.show_interval == 0:
                     self.env.render()
 
-            self.eplength = [self.eplength[i] + 1 for i in range(self.nenv)]
+            self.eplength = [self.eplength[i] + 1 for i in range(self.nenv)] # Todo use already implemented functions in run_ple_utils!!!
             self.epreturn = [self.epreturn[i] + rewards[i] for i in range(self.nenv)]
             self.states = states
             self.dones = dones
@@ -215,12 +266,13 @@ class Runner(object):
                                           simple_value=self.eplength[i])
                         summary.value.add(tag='envs/environment%s/episode_reward' % i,
                                           simple_value=self.epreturn[i])
-                        # summary.value.add(tag='environment/fps',
-                        #                   simple_value=self.env.episode_length / self.env.episode_run_time)
                         self.summary_writer.add_summary(summary, self.ep_idx[i])  #self.global_step.eval())
                         self.summary_writer.flush()
-                    self.retbuffer.append(self.epreturn[i])
-                    if self.epreturn[i] > self.max_return: self.max_return = self.epreturn[i]
+                    # self.retbuffer.append(self.epreturn[i])
+                    if self.epreturn[i] > self.max_return:
+                        self.max_return = self.epreturn[i]
+                        self.logger.info('Save model at max reward %s' % self.max_return)
+                        self.model.save('inter_model')
                     self.eplength[i] = 0
                     self.epreturn[i] = 0
             self.obs = obs
@@ -243,22 +295,28 @@ class Runner(object):
                 rewards = discount_with_dones(rewards+[value], dones+[0], self.gamma)[:-1]
             else:
                 rewards = discount_with_dones(rewards, dones, self.gamma)
+            self.logger.debug('Discounted rewards: %s' % rewards)
             mb_rewards[n] = rewards
         mb_rewards = mb_rewards.flatten()
         mb_actions = mb_actions.flatten()
         mb_values = mb_values.flatten()
         mb_masks = mb_masks.flatten()
 
-        if len(self.retbuffer) > 0:
-            self.avg_return_n_episodes = np.mean(self.retbuffer)
+        # if len(self.retbuffer) > 0:
+        #     self.avg_return_n_episodes = np.mean(self.retbuffer)
 
-        return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values, self.avg_return_n_episodes
+        self.logger.debug('Actions: %s' % mb_actions)
+        self.logger.debug('Q values: %s' % mb_values)
+        self.logger.debug('Done mask: %s' % mb_masks)
+        self.logger.debug('Observations: %s' % mb_obs)
+
+        return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values, self.max_return  # self.avg_return_n_episodes
 
 def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01,
           max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99,
           units_per_hlayer=None, log_interval=100, logdir='/mnt/logs/A2C',
           save_interval=1000, show_interval=0):
-    # TODO only use defaults values for arguments once and not again in model to ensure that default value is set only once.
+    logger = logging.getLogger(__name__)
     tf.reset_default_graph()
     set_global_seeds(seed)
 
@@ -273,61 +331,60 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
     sum_write = model.get_summary_writer()
     runner = Runner(env, model, nsteps=nsteps, gamma=gamma, show_interval=show_interval, summary_writer=sum_write)
 
+    logger.info('Start Training')
     nbatch = nenvs*nsteps
     tstart = time.time()
-    max_avg_ep_return = -5
+    max_avg_ep_return = -5  # moving average of 20*nenv training episodes
+    max_returns = deque([50], maxlen=7)  # returns of the 7 best training episodes
     for update in range(1, total_timesteps//nbatch + 1):
         obs, states, rewards, masks, actions, values, avg_ep_return = runner.run()
         policy_loss, value_loss, policy_entropy, ap = model.train(obs, states, rewards, masks, actions, values)
-        # print(ap)
 
-        # Save network model if average return of last 20 * nenvs episodes is higher than threshold 30
-        # and at least 5 points higher than the recent maximum average return per 20 * nenvs episodes.
-        # print(avg_ep_return)
-        if avg_ep_return > -4.99 and avg_ep_return >= (max_avg_ep_return + 5):
-            max_avg_ep_return = avg_ep_return
-            model.save(logdir, 'inter_model', )
-        # if update % save_interval == 0:
-        #     model.save(logdir, 'inter_model', )  # save model not w.r.t to training step but depending on achieved result.
         nseconds = time.time()-tstart
         fps = int((update*nbatch)/nseconds)
         if update % log_interval == 0 or update == 1:
             ev = explained_variance(values, rewards)
             # logger.record_tabular("nupdates", update)
-            logger.record_tabular("total_timesteps", update*nbatch)
+            # logger.record_tabular("total_timesteps", update*nbatch)
             # logger.record_tabular("fps", fps)
             # logger.record_tabular("policy_entropy", float(policy_entropy))
             # logger.record_tabular("value_loss", float(value_loss))
             # logger.record_tabular("explained_variance", float(ev))
             # logger.dump_tabular()
-    model.save(logdir, 'final_model')
 
-    # return np.mean(runner.retbuffer), np.var(runner.retbuffer), runner.max_return
+    model.save('final_model')
+    logger.info('Finished Training. Saving Final model.\n')
 
-from run_ple_utils import make_ple_envs  #, arg_parser
+
+from run_ple_utils import make_ple_envs, make_ple_env  #, arg_parser
 from models_OAI import MlpPolicy, FCPolicy, CastaPolicy, LargerMLPPolicy
 if __name__ == '__main__':
     seed = 2
     env = make_ple_envs('FlappyBird-v1', num_env=3, seed=seed)
+
+    logger = logging.getLogger()
+    ch = logging.StreamHandler()  # Handler which writes to stderr (in red)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(logging.Formatter('%(levelname)s:%(name)s: %(message)s'))
+    logger.addHandler(ch)
+    logger.setLevel(logging.INFO)
+
     logdir = '/home/mara/Desktop/logs/A2C_OAI_NENVS'
     logdir = os.path.join(logdir, str(datetime.datetime.today()))
-    learn(LargerMLPPolicy, env,
-           seed=seed,
-           nsteps=50,
-           vf_coef=0.2,
-           ent_coef=1e-7,
-           gamma=0.90,
-           lr=5e-4,
-           lrschedule='constant',
-           max_grad_norm=0.01,
-           log_interval=30,
-           save_interval=1000,
-           show_interval=30,
-           units_per_hlayer=(32,32,32),
-           total_timesteps=40000,  # int(1e7),
-           logdir=logdir)
 
-    # print('average performance: %s' % avg_perf)
-    # print('performance variance: %s' % var_perf)
-    # print('maximal return was: %s' % max_return)
+    learn(LargerMLPPolicy, env,
+          seed=seed,
+          nsteps=50,
+          vf_coef=0.2,
+          ent_coef=1e-7,
+          gamma=0.90,
+          lr=5e-4,
+          lrschedule='constant',
+          max_grad_norm=0.01,
+          log_interval=30,
+          save_interval=1000,
+          show_interval=0,
+          units_per_hlayer=(32,32,32),
+          total_timesteps=40000,  # int(1e7),
+          logdir=logdir)
     env.close()

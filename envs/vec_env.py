@@ -2,7 +2,7 @@ import numpy as np
 from multiprocessing import Process, Pipe
 
 from abc import ABC, abstractmethod
-import logger
+# import logger
 
 def worker(remote, parent_remote, env_fn_wrapper):
     parent_remote.close()
@@ -89,7 +89,8 @@ class VecEnv(ABC):
         return self.step_wait()
 
     def render(self):
-        logger.warn('Render not defined for %s'%self)
+        # logger.warn('Render not defined for %s'%self)
+        print('Render not defined for %s'%self)
 
 class CloudpickleWrapper(object):
     """

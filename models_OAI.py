@@ -298,6 +298,7 @@ class LargerMLPPolicy(object):
         # self.pd = self.pdtype.pdfromflat(pdparam)
         self.pd = CategoricalPd(pi_logit)  # pdparam
         a0 = self.pd.sample()  # returns action index: 0,1
+        # a0 = tf.argmax(pi, axis=1)
         # a0 = np.random.choice(ac_space, p=pi)  # returns action value: 119,None
         # a0 = random_choice(sess, np.ones(shape=(nbatch, nact)) * np.array(range(nact)).T, pi)
         # neglogp0 = self.pd.neglogp(a0)
@@ -313,8 +314,9 @@ class LargerMLPPolicy(object):
 
         self.X = X
         self.pi = pi
-        self.pi_logit =pi_logit
+        self.pi_logit = pi_logit
         self.vf = vf
+        self.ac = a0
         self.step = step
         self.value = value
 
@@ -413,33 +415,36 @@ class DQN():
     """
     Deep Q Network class based on TensorFlow.
     """
-    def __init__(self, sess, ob_space, num_actions, scope=None, reuse=False):
+    def __init__(self, sess, ob_space, num_actions, batch_size, units_per_hlayer, scope=None, reuse=False):
         nd, = ob_space.shape
         prefix = "target_" if (scope == "target") else ""
+
         self.obs_in = tf.placeholder(shape=[None, nd], dtype=tf.float32,
                                      name=prefix + "state_in")  # observations
 
         # Network Architecture
-        # with tf.variable_scope(scope, reuse=reuse): # leads to error when assigning weights to target network
-        h1 = tf.layers.dense(self.obs_in,
-                             units=64,
-                             activation=tf.nn.relu6,
-                             kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
-                             name='dqn_h1')
-        h2 = tf.layers.dense(h1,
-                             units=64,
-                             activation=tf.nn.relu6,
-                             kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
-                             name='dqn_h2')
-        h3 = tf.layers.dense(h2,
-                            units=64,
-                            activation=tf.nn.elu,
-                            kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
-                            name='dqn_h3')
+        with tf.variable_scope(scope, reuse=tf.AUTO_REUSE): # leads to error when assigning weights to target network
+            h1 = tf.nn.elu(fc(self.obs_in, 'dqn_h1', nh=units_per_hlayer[0]))
+            h2 = tf.nn.tanh(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
+            h3 = tf.nn.elu(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
+            # h1 = tf.layers.dense(self.obs_in,
+            #                      units=units_per_hlayer[0],
+            #                      activation=tf.nn.relu6,
+            #                      kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
+            #                      name='dqn_h1')
+            # h2 = tf.layers.dense(h1,
+            #                      units=units_per_hlayer[1],
+            #                      activation=tf.nn.tanh,
+            #                      kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
+            #                      name='dqn_h2')
+            # h3 = tf.layers.dense(h2,
+            #                      units=units_per_hlayer[2],
+            #                      activation=tf.nn.elu,
+            #                      kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
+            #                      name='dqn_h3')
         # Output: predicted Q values of each action
-        self.pred_out = tf.layers.dense(h3, num_actions, activation=None, kernel_initializer=None)
-
-        # tf.add_to_collection(tf.GraphKeys.TRAIN_OP, self.pred_out)
+        self.predQ = tf.layers.dense(h3, num_actions, activation=None, kernel_initializer=None)
+        a0 = np.argmax(self.predQ)
 
         def predict(obs, dones, lstm_states):
             """
@@ -449,6 +454,10 @@ class DQN():
             Return:
                 The prediction of the output tensor. [batch_size, n_valid_actions]
             """
-            return sess.run(self.pred_out, feed_dict={self.obs_in: obs})
+            return sess.run(self.predQ, feed_dict={self.obs_in: obs})
+
+        def step(obs):
+            return sess.run(a0, feed_dict={self.obs_in: obs})
 
         self.predict = predict
+        self.step = step

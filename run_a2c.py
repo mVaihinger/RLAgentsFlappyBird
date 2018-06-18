@@ -8,13 +8,14 @@ from eval_model import eval_model
 from A2C_OAI_NENVS import learn
 
 import numpy as np
+import logging
 
 import datetime, os
 
 def main():
     parser = arg_parser()
-    parser.add_argument('--nenvs', help='Number of environments', type=int, default=1)
-    parser.add_argument('--policy', help='Policy architecture', choices=['mlp', 'casta', 'largemlp'], default='mlp')
+    parser.add_argument('--nenvs', help='Number of environments', type=int, default=3)
+    parser.add_argument('--policy', help='Policy architecture', choices=['mlp', 'casta', 'largemlp'], default='largemlp')
     parser.add_argument('--nsteps', help='n environment steps per train update', type=int, default=50)
     parser.add_argument('--vf_coeff', help='Weight of value function loss in total loss', type=float, default=0.2)
     parser.add_argument('--ent_coeff', help='Weight of entropy in total loss', type=float, default=1e-7)
@@ -26,15 +27,15 @@ def main():
     parser.add_argument('--units_shared_layer2', help='Units in second hidden layer which is shared', type=int, default=64)
     parser.add_argument('--units_policy_layer', help='Units in hidden layer in policy head', type=int, default=64)
     parser.add_argument('--log_interval', help='parameter values stored in tensorboard summary every <log_interval> model update step. 0 --> no logging ', type=int, default=30)
-    parser.add_argument('--save_interval', help='Model is saved after <save_interval> model updates', type=int, default=1000)
+    # parser.add_argument('--save_interval', help='Model is saved after <save_interval> model updates', type=int, default=1000)
     parser.add_argument('--show_interval', help='Env is rendered every n-th episode. 0 = no rendering', type=int, default=0)
     parser.add_argument('--logdir', help='directory where logs are stored', default='/home/mara/Desktop/logs/A2C_OAI_NENVS')  # '/mnt/logs/A2C')
     args = parser.parse_args()
 
     seed = args.seed
-    print(args.env, args.nenvs)
+    # print(args.env, args.nenvs)
     env = make_ple_envs(args.env, num_env=args.nenvs, seed=seed)
-    print(env)
+    # print(env)
 
     if args.policy == 'mlp':
         policy_fn = MlpPolicy
@@ -50,6 +51,14 @@ def main():
         for k,v in vars(args).items():
             f.write(k + ': ' + str(v) + '\n')
 
+    logger = logging.getLogger()  # TODO setup root logger is necessary to use FIleHandler
+    fh = logging.FileHandler(os.path.join(logdir, 'smac.log'))
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s:%(name)s: %(message)s'))
+    logger.addHandler(fh)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
     avg_perf, var_perf, max_return = learn(policy_fn, env,
                                            seed=seed,
                                            nsteps=args.nsteps,
@@ -63,7 +72,7 @@ def main():
                                                              args.units_shared_layer2,
                                                              args.units_policy_layer),
                                            log_interval=args.log_interval,
-                                           save_interval=args.save_interval,
+                                           # save_interval=args.save_interval,
                                            total_timesteps=args.total_timesteps,
                                            logdir=logdir)
     env.close()
@@ -130,13 +139,21 @@ def run_a2c_smac(**kwargs):
     paramDict.add_num_param("units_shared_layer2", lb=8, ub=260, default=64, dtype=int),
     paramDict.add_num_param("units_policy_layer", lb=8, ub=260, default=64, dtype=int),
     paramDict.add_num_param("log_interval", lb=1, ub=1e5, default=100, dtype=int),
-    paramDict.add_num_param("save_interval", lb=1, ub=1e5, default=1000, dtype=int),
+    # paramDict.add_num_param("save_interval", lb=1, ub=1e5, default=1000, dtype=int),
     paramDict.add_num_param("show_interval", lb=0, ub=1e5, default=0, dtype=int),
     paramDict.add_cat_param("logdir", options=None, default='/home/mara/Desktop/logs/A2C_OAI_NENVS', dtype=str),
+    paramDict.add_cat_param("eval_model", options=['all', 'final'], default='all', dtype=str)
     params = paramDict.check_params(**kwargs)
 
+    # logger = logging.getLogger(__name__)
+    # logger.propagate = False  # no duplicate logging outputs
+    # fh = logging.FileHandler(os.path.join(params["logdir"], 'run.log'))
+    # fh.setLevel(logging.INFO)
+    # fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s:%(name)s: %(message)s'))
+    # logger.addHandler(fh)
+
     seed = params["seed"]
-    print(params["env"], params["nenvs"])
+    # print(params["env"], params["nenvs"])  # TODO remove this here!
     ple_env = make_ple_envs(params["env"], num_env=params["nenvs"], seed=seed)
     # print(ple_env)
 
@@ -147,13 +164,10 @@ def run_a2c_smac(**kwargs):
     elif params["policy"] == 'largemlp':
         policy_fn = LargerMLPPolicy
 
-    # store hyperparms setting
-    # logdir = os.path.join(params["logdir"], str(datetime.datetime.today()))
-    # os.makedirs(logdir)
-    print()
     with open(os.path.join(params["logdir"], 'hyperparams.txt'), 'a') as f:
-        for k,v in params.items():
+        for k, v in params.items():
             f.write(k + ': ' + str(v) + '\n')
+
     learn(policy_fn, ple_env,
           seed=seed,
           nsteps=params["nsteps"],
@@ -167,12 +181,18 @@ def run_a2c_smac(**kwargs):
                             params["units_shared_layer2"],
                             params["units_policy_layer"]),
           log_interval=params["log_interval"],
-          save_interval=params["save_interval"],
+          # save_interval=params["save_interval"],
           total_timesteps=params["total_timesteps"],
           logdir=params["logdir"])
     ple_env.close()
-    avg_perf, var_perf, max_return = eval_model(render=False, nepisodes=200, **params)
+    avg_perf, var_perf, max_return = eval_model(render=False, nepisodes=20, **params)
 
+    with open(os.path.join(params["logdir"], 'hyperparams.txt'), 'a') as f:
+        f.write('\n')
+        f.write('Results: \n')
+        f.write('average performance: ' + str(avg_perf) + '\n')
+        f.write('performance variance: ' + str(var_perf) + '\n')
+        f.write('maximum return: ' + str(max_return) + '\n')
 
     return avg_perf, var_perf, max_return
 

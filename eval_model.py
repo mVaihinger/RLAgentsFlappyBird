@@ -1,178 +1,144 @@
-from run_ple_utils import make_ple_envs
-from A2C_OAI_NENVS import Model # , LOG_FILE
+from run_ple_utils import make_ple_envs, make_ple_env
 import tensorflow as tf
 import os, glob
 import numpy as np
+import logging
 
-from models_OAI import MlpPolicy, FCPolicy, CastaPolicy, LargerMLPPolicy
-from utils_OAI import set_global_seeds
+from utils_OAI import set_global_seeds, normalize_obs
 
 def eval_model(render, nepisodes, **params):
-    print('Evaluating model...')
-    ple_env = make_ple_envs(params["env"], num_env=1, seed=params["seed"], allow_early_resets=True)
+    logger = logging.getLogger(__name__)
+    logger.info('Evaluating learning algorithm...')
+
+    logger.debug('Make Environment with seed %s' % params["seed"])
+    ple_env = make_ple_env(params["env"], seed=params["seed"]) # TODO use different seed for every run!#, allow_early_resets=True)
 
     tf.reset_default_graph()
-    set_global_seeds(params["seed"])
+    set_global_seeds(params["seed"])#
+    model_idx = []
 
-    nenvs = ple_env.num_envs
-    ob_space = ple_env.observation_space
-    ac_space = ple_env.action_space
-    nd, = ple_env.observation_space.shape
-
-    # Create model: policy, ac_space, ob_space, nenvs and nsteps have to be the same than during training.
-    if params["policy"] == 'mlp':
-        policy_fn = MlpPolicy
-    elif params["policy"] == 'casta':
-        policy_fn = CastaPolicy
-    elif params["policy"] == 'largemlp':
-        policy_fn = LargerMLPPolicy
-
-    model = Model(policy=policy_fn,
-                  ob_space=ob_space,
-                  ac_space=ac_space,
-                  nenvs=nenvs,
-                  nsteps=params["nsteps"],
-                  vf_coef=params["vf_coeff"],
-                  ent_coef=params["ent_coeff"],
-                  max_grad_norm=params["max_grad_norm"],
-                  lr=params["lr"],
-                  lrschedule=params["lrschedule"],
-                  units_per_hlayer=(params["units_shared_layer1"],
-                                    params["units_shared_layer2"],
-                                    params["units_policy_layer"]),
-                  total_timesteps=params["total_timesteps"],
-                  log_interval=0)
-
-    file = glob.glob(os.path.join(params["logdir"], 'final_model-*.meta'))
-    loader = tf.train.import_meta_graph(os.path.join(params["logdir"], file[0]))
-
-    # # Only use final model:
-    # with tf.Session() as sess:
-    #     loader.restore(sess, tf.train.latest_checkpoint(params["logdir"]))  # load parameter values of last checkpoint into session
-    #     obs = ple_env.reset()
-    #     done = False
-    #     ep_length = []
-    #     ep_return = []
-    #     total_return = 0
-    #     total_length = 0
-    #
-    #     for i in range(nepisodes):
-    #         act, _, _ = model.step(obs)
-    #
-    #         if done:
-    #             ep_length.append(total_length)
-    #             ep_return.append(total_return)
-    #             break
-    #
-    #         next_obs, reward, done, _ = ple_env.step(act)
-    #         if render:
-    #             ple_env.render()
-    #
-    #         total_length += 1
-    #         total_return += reward
-    #
-    #     ple_env.close()
-    #
-    #     avg_performance = np.mean(ep_return)
-    #     var_performance = np.var(ep_return)
-    #     max_return = max(ep_return)
-
-    # Use all stored maximum performance models and the final model.
-    avg_performance = []
-    var_performance = []
-    max_return = []
-    for f in glob.glob(os.path.join(params["logdir"], '*.meta')):
+    if params["eval_model"] == 'final':
+        f = glob.glob(os.path.join(params["logdir"], 'final_model-*.meta'))
+        idx = f.find('run')
+        f_name = f[idx + 5:-5]
+        model_idx.append(f_name)
         with tf.Session() as sess:
-            loader.restore(sess, f[:-5])  # load parameter values of model into session
-            obs = ple_env.reset()
-            done = False
-            ep_length = []
-            ep_return = []
-            total_return = 0
-            total_length = 0
+            OBS, PI, PI_LOGITS, pred_ac_op, pred_vf_op = restore_model(sess, logdir=params["logdir"], f_name=f_name)
+            avg_performances, var_performances, maximal_returns = \
+                run_episodes(sess, ple_env, nepisodes, render, OBS, PI, PI_LOGITS, pred_ac_op)
 
-            for _ in range(0, nepisodes):
-                while not done:
-                    act, _, _ = model.step(obs)
-                    next_obs, reward, done, _ = ple_env.step(act)
-                    if render:
-                        ple_env.render()
+        tf.reset_default_graph()
 
-                    total_length += 1
-                    total_return += reward
-                done = False
-                total_return = 0
-                total_length = 0
-                ep_length.append(total_length)
-                ep_return.append(total_return)
-            # print('aa ' + str(ep_return))
-            avg_performance.append(np.mean(ep_return))
-            var_performance.append(np.var(ep_return))
-            max_return.append(np.max(ep_return))  # TODO why is this here empty??
+    elif params["eval_model"] == 'all':
+        # Use all stored maximum performance models and the final model.
+        avg_performances = []
+        var_performances = []
+        maximal_returns = []
+        for f in glob.glob(os.path.join(params["logdir"], '*.meta')):
+            logger.info('Restore model: %s' % f)
+            idx = f.find('run')
+            f_name = f[idx+5:-5]
+            model_idx.append(f_name)
+            with tf.Session() as sess:
+                OBS, PI, PI_LOGITS, pred_ac_op, pred_vf_op = restore_model(sess, logdir=params["logdir"], f_name=f_name)
+                logger.info('Run %s evaluation episodes' % nepisodes)
+                avg_model_performance, var_model_performance, maximal_model_return = \
+                    run_episodes(sess, ple_env, nepisodes, render, OBS, PI, PI_LOGITS, pred_ac_op)
+
+                # Add model performance metrics
+                avg_performances.append(avg_model_performance)
+                var_performances.append(var_model_performance)
+                maximal_returns.append(maximal_model_return)
+            tf.reset_default_graph()
+    logger.info('Results of the evaluation of the learning algorithm:')
+    logger.info('Restored models: %s' % model_idx)
+    logger.info('Average performance per model: %s' % avg_performances)
+    logger.info('Performance variance per model: %s' % var_performances)
+    logger.info('Maximum episode return per model: %s' % maximal_returns)
     ple_env.close()
 
-    # print(avg_performance)
-    # print(var_performance)
-    # print(max_return)
+    return np.mean(avg_performances), np.mean(var_performances), np.mean(maximal_returns)
 
-    return np.mean(avg_performance), np.mean(var_performance), np.mean(max_return)
+def restore_model(sess, logdir, f_name):
+    sess.run(tf.global_variables_initializer())
+    sess.run(tf.local_variables_initializer())
+    g = tf.get_default_graph()
 
+    # restore the model
+    loader = tf.train.import_meta_graph(glob.glob(os.path.join(logdir, 'final_model-*.meta'))[0])
+    # now variables exist, but the values are not initialized yet.
+    loader.restore(sess, os.path.join(logdir, f_name))  # restore values of the variables.
+
+    # Load operations from collections
+    obs_in = tf.get_collection('inputs')
+    probs_out = tf.get_collection('pi')
+    pi_logits_out = tf.get_collection('pi_logit')
+    predict_vf_op = tf.get_collection('val')
+    predict_ac_op = tf.get_collection('step')
+    return obs_in, probs_out, pi_logits_out, predict_ac_op, predict_vf_op
+
+def run_episodes(sess, env, n_eps, render, obs_in, pi_out, pi_logits_out, predict_ac_op):
+    logger = logging.getLogger(__name__)
+    ep_length = []
+    ep_return = []
+
+    for i in range(0, n_eps): # TODO parallelize this here!
+        obs = env.reset()
+        obs = normalize_obs(obs)
+        done = False
+        total_return = 0
+        total_length = 0
+
+        while not done:
+            pi, pi_log, act = sess.run([pi_out, pi_logits_out, predict_ac_op], feed_dict={obs_in[0]: [obs]})
+            ac = np.argmax(pi_log)
+            obs, reward, done, _ = env.step(ac)
+            # obs, reward, done, _ = env.step(act[0][0])
+            obs = normalize_obs(obs)
+
+            if render:
+                env.render()
+
+            total_length += 1
+            total_return += reward
+        logger.debug('*****************************************')
+        logger.debug('Episode %s: %s, %s' % (i, total_return, total_length))
+        ep_length.append(total_length)
+        ep_return.append(total_return)
+
+    return np.mean(ep_return), np.var(ep_return), np.max(ep_return)
 
 if __name__ == '__main__':
-    LOG_FILE = "/home/mara/Desktop/logs/A2C_OAI_NENVS/2018-05-16 15:31:12.040042"
-    f_name = 'inter_model_300.meta'
+    logdir = "/home/mara/Desktop/logs/A2C_OAI_NENVS/2018-06-12-16-32-47/run1/"
 
-    seed = 1
-    nenvs = 1
+    logger = logging.getLogger()
+    ch = logging.StreamHandler()  # Handler which writes to stderr (in red)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(logging.Formatter('%(levelname)s:%(name)s: %(message)s'))
+    logger.addHandler(ch)
+    fh = logging.FileHandler(os.path.join(logdir, 'eval.log'))
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s:%(name)s: %(message)s'))
+    logger.addHandler(fh)
+    logger.setLevel(logging.INFO)
 
-    tf.reset_default_graph()
-    env = make_ple_envs('FlappyBird-v1', num_env=nenvs, seed=seed)
-    set_global_seeds(seed)
+    # Read params from hyperparameter.txt
+    params = dict()
+    file = open(os.path.join(logdir, 'hyperparams.txt'), 'r')
+    for line in file:
+        if line is '\n':
+            break
+        idx = line.find(':')
+        p_name = line[:idx]
+        p_val = line[idx + 1:]
+        try:
+            params[p_name] = int(p_val)
+        except Exception:
+            try:
+                params[p_name] = float(p_val)
+            except Exception:
+                params[p_name] = p_val[1:-1]
+    params["eval_model"] = 'all'
 
-    eval_model()
-
-    nenvs = env.num_envs
-    ob_space = env.observation_space
-    ac_space = env.action_space
-
-    # Create model: policy, ac_space, ob_space, nenvs and nsteps have to be the same than during training.
-    policy = CastaPolicy
-    model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nenvs=nenvs, nsteps=50, vf_coef=0.2,
-                  ent_coef=1e-7, max_grad_norm=0.01, lr=5e-5, lrschedule='constant', total_timesteps=1000)
-    if f_name is None:
-        file = glob.glob(os.path.join(LOG_FILE, 'final_model-*.meta'))
-    else:
-        file = glob.glob(os.path.join(LOG_FILE, f_name))
-    loader = tf.train.import_meta_graph(os.path.join(LOG_FILE, file[0]))
-    # g = tf.get_default_graph()
-    with tf.Session() as sess:
-        loader.restore(sess, tf.train.latest_checkpoint(LOG_FILE))  # load parameter values of last checkpoint into session
-        obs = env.reset()
-        done = False
-
-        # TODO compute average return of each episode
-
-        for i in range(10000):
-            # if done:
-                # env.reset()
-
-            act, _, _ = model.step(obs)
-            print(act)
-            # act = sess.run(pi, feed_dict={'Ob:0': obs})
-            next_obs, reward, done, _ = env.step(act)
-            env.render()
-
-        env.close()
-
-    # env = make_ple_envs('FlappyBird-v1', num_env=nenvs, seed=seed)
-    # ac_space = env.action_space
-    # ob_space = env.observation_space
-    # model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nsteps=5, nenvs=nenvs)
-    # env.close()
-
-# Start env
-
-# Load model trained with method A2C, DQN, etc.
-
-
-# Evaluate the model
+    # evaluate model
+    avg_perf, var_perf, max_return = eval_model(render=False, nepisodes=100, **params)
