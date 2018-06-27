@@ -12,14 +12,14 @@ from envs.vec_env import SubprocVecEnv
 from utils_OAI import set_global_seeds
 
 
-def make_ple_envs(env_id, num_env, seed, start_index=0, **kwargs):
+def make_ple_envs(env_id, num_env, seed, start_index=0, *args, **kwargs):
     """
     Create a monitored SubprocVecEnv for PLE.
     """
     def make_env(rank): # pylint: disable=C0111
         def _thunk():
             env = gym.make(env_id)
-            env.seed(seed + rank)
+            env.seed(seed + rank, *args, **kwargs)
             env = Monitor(env, None, **kwargs)
             # env = Monitor(env, logger.get_dir() and os.path.join(logger.get_dir(), str(rank)), **kwargs)
             return env
@@ -27,11 +27,12 @@ def make_ple_envs(env_id, num_env, seed, start_index=0, **kwargs):
     set_global_seeds(seed)
     return SubprocVecEnv([make_env(i + start_index) for i in range(num_env)])
 
-def make_ple_env(env_id, seed):
+def make_ple_env(env_id, seed, **kwargs):
     env = gym.make(env_id)
-    env.seed(seed)
+    env.seed(seed, **kwargs)
     set_global_seeds(seed)
     return env
+
 
 def arg_parser():
     """
@@ -41,7 +42,7 @@ def arg_parser():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--env', help='environment ID', default='FlappyBird-v1')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
-    parser.add_argument('--total_timesteps', help='Total number of env steps', type=int, default=int(10e6))
+    parser.add_argument('--total_timesteps', help='Total number of env steps', type=int, default=int(10e5))
     return parser
 
 

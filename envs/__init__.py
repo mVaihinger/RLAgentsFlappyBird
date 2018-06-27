@@ -8,3 +8,10 @@ for game in ['FlappyBird']:
         kwargs={'game_name': game, 'display_screen': False},
         tags={'wrapper_config.TimeLimit.max_episode_steps': 10000000},
         nondeterministic=nondeterministic,)
+
+    register(
+        id='{}-v2'.format(game),
+        entry_point='envs.environment:PLEEnv_nonstat',
+        kwargs={'game_name': game, 'display_screen': False},
+        tags={'wrapper_config.TimeLimit.max_episode_steps': 10000000},
+        nondeterministic=nondeterministic, )
