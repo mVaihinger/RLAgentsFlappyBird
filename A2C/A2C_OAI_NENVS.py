@@ -360,8 +360,10 @@ from run_ple_utils import make_ple_envs, make_ple_env  #, arg_parser
 from models_OAI import MlpPolicy, FCPolicy, CastaPolicy, LargerMLPPolicy
 if __name__ == '__main__':
     seed = 2
-    env = make_ple_envs('FlappyBird-v1', num_env=3, seed=seed)
-
+    # env = make_ple_envs('FlappyBird-v2', num_env=3, seed=seed,
+    #                     trace_length=500, offset=1., amplitude=0.1, fband=[0.0001, 0.005],  # Filtered Random Walk
+    #                     nsteps=20, time_interval=[20,200], value_interval=[3,6])            # Random Steps
+    env = make_ple_envs('FlappyBird-v2', num_env=3, seed=seed)
     logger = logging.getLogger()
     ch = logging.StreamHandler()  # Handler which writes to stderr (in red)
     ch.setLevel(logging.INFO)
@@ -383,7 +385,7 @@ if __name__ == '__main__':
           max_grad_norm=0.01,
           log_interval=30,
           save_interval=1000,
-          show_interval=0,
+          show_interval=1,
           units_per_hlayer=(32,32,32),
           total_timesteps=40000,  # int(1e7),
           logdir=logdir)

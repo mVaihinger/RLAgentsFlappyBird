@@ -20,7 +20,7 @@ def eval_model(render, nepisodes, **params):
     if params["eval_model"] == 'final':
         f = glob.glob(os.path.join(params["logdir"], 'final_model-*.meta'))
         idx = f.find('run')
-        f_name = f[idx + 5:-5]
+        f_name = f[idx + 6:-5]
         model_idx.append(f_name)
         with tf.Session() as sess:
             OBS, PI, PI_LOGITS, pred_ac_op, pred_vf_op = restore_model(sess, logdir=params["logdir"], f_name=f_name)
@@ -37,7 +37,7 @@ def eval_model(render, nepisodes, **params):
         for f in glob.glob(os.path.join(params["logdir"], '*.meta')):
             logger.info('Restore model: %s' % f)
             idx = f.find('run')
-            f_name = f[idx+5:-5]
+            f_name = f[idx+6:-5]
             model_idx.append(f_name)
             with tf.Session() as sess:
                 OBS, PI, PI_LOGITS, pred_ac_op, pred_vf_op = restore_model(sess, logdir=params["logdir"], f_name=f_name)

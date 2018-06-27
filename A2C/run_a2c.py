@@ -59,24 +59,24 @@ def main():
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-    avg_perf, var_perf, max_return = learn(policy_fn, env,
-                                           seed=seed,
-                                           nsteps=args.nsteps,
-                                           vf_coef=args.vf_coeff,
-                                           ent_coef=args.ent_coeff,
-                                           gamma=args.gamma,
-                                           lr=args.lr,
-                                           lrschedule=args.lrschedule,
-                                           max_grad_norm=args.max_grad_norm,
-                                           units_per_hlayer=(args.units_shared_layer1,
-                                                             args.units_shared_layer2,
-                                                             args.units_policy_layer),
-                                           log_interval=args.log_interval,
-                                           # save_interval=args.save_interval,
-                                           total_timesteps=args.total_timesteps,
-                                           logdir=logdir)
+    learn(policy_fn, env,
+          seed=seed,
+          nsteps=args.nsteps,
+          vf_coef=args.vf_coeff,
+          ent_coef=args.ent_coeff,
+          gamma=args.gamma,
+          lr=args.lr,
+          lrschedule=args.lrschedule,
+          max_grad_norm=args.max_grad_norm,
+          units_per_hlayer=(args.units_shared_layer1,
+                            args.units_shared_layer2,
+                            args.units_policy_layer),
+          log_interval=args.log_interval,
+          # save_interval=args.save_interval,
+          total_timesteps=args.total_timesteps,
+          logdir=logdir)
     env.close()
-    return avg_perf, var_perf, max_return
+    # return avg_perf, var_perf, max_return
 
 class ParamDict():
     def __init__(self):
