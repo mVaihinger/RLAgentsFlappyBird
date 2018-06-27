@@ -461,3 +461,49 @@ class DQN():
 
         self.predict = predict
         self.step = step
+
+class DQN_smac():
+    """
+    Deep Q Network class based on TensorFlow.
+    """
+
+    def __init__(self, sess, ob_space, num_actions, batch_size, units_per_hlayer, scope=None, reuse=False):
+        nd, = ob_space.shape
+        prefix = "target_" if (scope == "target") else ""
+
+        X = tf.placeholder(shape=(batch_size, nd), dtype=tf.float32,
+                           name=prefix + "Ob")  # observations
+
+        # Network Architecture
+        with tf.variable_scope(scope, reuse=reuse):  # leads to error when assigning weights to target network
+            h1 = tf.nn.elu(fc(X, 'dqn_h1', nh=units_per_hlayer[0]))
+            h2 = tf.nn.elu(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
+            h3 = tf.nn.elu(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
+            predQ = fc(h3, 'predQ', num_actions, init_scale=0.01)
+        # a0 = np.argmax(predQ)
+        #
+        # def step(obs, *_args, **_kwargs):
+        #     return sess.run(a0, feed_dict={X: obs})
+
+        def predict(obs, *_args, **_kwargs):
+            """
+            Args:
+                sess: TensorFlow session
+                obs: array of observatons for which we want to predict the actions. [batch_size]
+            Return:
+                The prediction of the output tensor. [batch_size, n_valid_actions]
+            """
+            return sess.run(predQ, feed_dict={X: obs})
+
+        def step(obs, epsilon, *_args, **_kwargs):  # epsilon greedy policy
+            QP = sess.run(predQ, feed_dict={X: obs})
+            best_ac = np.argmax(QP)
+            AP = np.ones(num_actions, dtype=float) * epsilon / num_actions
+            AP[best_ac] += (1.0 - epsilon)
+            return AP
+
+        self.X = X
+        # self.ac = a0
+        self.predQ = predQ
+        self.predict = predict
+        self.step = step
