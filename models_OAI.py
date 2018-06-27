@@ -208,7 +208,7 @@ class MlpPolicy(object):
 
         self.X = X
         self.pi = pi
-        self.pi_logit =pi_logit
+        self.pi_logit = pi_logit
         self.vf = vf
         self.step = step
         self.value = value
@@ -314,7 +314,6 @@ class LargerMLPPolicy(object):
 
         self.X = X
         self.pi = pi
-        self.pi_logit = pi_logit
         self.vf = vf
         self.ac = a0
         self.step = step

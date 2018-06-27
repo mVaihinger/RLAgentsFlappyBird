@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 
 PIPE_GAP = 150
 
-
 def process_state(state):
     return np.array(list(state.values()))  # np.array([ .... ])
 
