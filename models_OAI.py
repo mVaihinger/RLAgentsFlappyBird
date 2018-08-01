@@ -87,7 +87,7 @@ class LstmPolicy(object):
         ob_shape = (nbatch, nd)
         nact = len(ac_space)  # ac_space.n
         X = tf.placeholder(tf.float32, ob_shape, name='X') #obs
-        M = tf.placeholder(tf.float32, [nbatch], name='M') #mask (done t-1)
+        M = tf.placeholder(tf.float32, [nbatch], name='M') #mask (done t-1)  is the previos sample a terminating one?
         S = tf.placeholder(tf.float32, [nenv, nlstm*2], name='S') #states
         with tf.variable_scope("model", reuse=reuse):
             h = fc_layers(X)  # nature_cnn(X)
@@ -266,7 +266,7 @@ class CastaPolicy(object):
         self.value = value
 
 class LargerMLPPolicy(object):
-    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, units_per_hlayer, reuse=False):  # pylint: disable=W0613
+    def __init__(self, sess, ob_space, ac_space, nenvs, nsteps, units_per_hlayer, reuse=False, activ_fcn='relu6'):  # pylint: disable=W0613
         # this method is called with nbatch = nenvs*nsteps
 
         # nh, nw, nc = ob_space.shape
@@ -275,21 +275,34 @@ class LargerMLPPolicy(object):
         # Todo check initialization
         # Input and Output dimensions
         nd, = ob_space.shape
+        nbatch = nenvs * nsteps
         ob_shape = (nbatch, nd)
         nact = ac_space.n
         X = tf.placeholder(tf.float32, ob_shape, name='Ob')  # obs
         with tf.variable_scope("model", reuse=reuse):
-            h1 = tf.nn.relu6(fc(X, 'pi_vf_fc1', nh=units_per_hlayer[0]))  #, init_scale=np.sqrt(2)))
-            h2 = tf.nn.elu(fc(h1, 'pi_vf_fc2', nh=units_per_hlayer[1]))  #, init_scale=np.sqrt(2)))
+            if activ_fcn == 'relu6':
+                h1 = tf.nn.relu6(fc(X, 'pi_vf_fc1', nh=units_per_hlayer[0]))  # , init_scale=np.sqrt(2)))
+                h2 = tf.nn.relu6(fc(h1, 'pi_vf_fc2', nh=units_per_hlayer[1]))  # , init_scale=np.sqrt(2)))
 
-            h3 = tf.nn.tanh(fc(h2, 'pi_fc1', nh=units_per_hlayer[2]))  #, init_scale=np.sqrt(2)))
+                h3 = tf.nn.relu6(fc(h2, 'pi_fc1', nh=units_per_hlayer[2]))  # , init_scale=np.sqrt(2)))
+            elif activ_fcn == 'elu':
+                h1 = tf.nn.elu(fc(X, 'pi_vf_fc1', nh=units_per_hlayer[0]))  # , init_scale=np.sqrt(2)))
+                h2 = tf.nn.elu(fc(h1, 'pi_vf_fc2', nh=units_per_hlayer[1]))  # , init_scale=np.sqrt(2)))
+
+                h3 = tf.nn.elu(fc(h2, 'pi_fc1', nh=units_per_hlayer[2]))  # , init_scale=np.sqrt(2)))
+            elif activ_fcn == 'mixed':
+                h1 = tf.nn.relu6(fc(X, 'pi_vf_fc1', nh=units_per_hlayer[0]))  #, init_scale=np.sqrt(2)))
+                h2 = tf.nn.elu(fc(h1, 'pi_vf_fc2', nh=units_per_hlayer[1]))  #, init_scale=np.sqrt(2)))
+
+                h3 = tf.nn.tanh(fc(h2, 'pi_fc1', nh=units_per_hlayer[2]))  #, init_scale=np.sqrt(2)))
+
             # h4 = tf.nn.tanh(fc(h3, 'pi_fc2', nh=64))  #, init_scale=np.sqrt(2)))
             pi_logit = fc(h3, 'pi', nact, init_scale=0.01)
             pi = tf.nn.softmax(pi_logit)
 
             # h4 = activ(fc(h1, 'vf_fc1', nh=64, init_scale=np.sqrt(2)))  # TODO add these layers
             # h5 = tf.nn.elu(fc(h2, 'vf_fc1', nh=64))  #, init_scale=np.sqrt(2)))
-            vf = fc(h2, 'vf', 1)[:, 0]
+            vf = fc(h2, 'vf', 1)[:, 0]  # TODO this should output two values, one Q value per action.
             logstd = tf.get_variable(name="logstd", shape=[1, nact],
                                      initializer=tf.zeros_initializer())
 
@@ -314,8 +327,99 @@ class LargerMLPPolicy(object):
 
         self.X = X
         self.pi = pi
+        self.pi_logit = pi_logit
         self.vf = vf
         self.ac = a0
+        self.step = step
+        self.value = value
+
+class LargerLSTMPolicy(object):
+    def __init__(self, sess, ob_space, ac_space, nenvs, nsteps, units_per_hlayer, reuse=False, activ_fcn='relu6'):  # pylint: disable=W0613
+        # this method is called with nbatch = nenvs*nsteps
+
+        # nh, nw, nc = ob_space.shape
+        # ob_shape = (nbatch, nh, nw, nc)
+        # actdim = ac_space.shape[0]
+        # Todo check initialization
+        # Input and Output dimensions
+        nd, = ob_space.shape
+        nbatch = nenvs * nsteps
+        ob_shape = (nbatch, nd)
+        nact = ac_space.n
+        X = tf.placeholder(tf.float32, ob_shape, name='Ob')  # obs
+        with tf.variable_scope("model", reuse=reuse):
+            # h1 = tf.nn.relu6(fc(X, 'pi_vf_fc1', nh=units_per_hlayer[0]))  # , init_scale=np.sqrt(2)))
+            # h2 = tf.nn.elu(fc(h1, 'pi_vf_fc2', nh=units_per_hlayer[1]))  # , init_scale=np.sqrt(2)))
+
+            if activ_fcn == 'relu6':
+                h1 = tf.nn.relu6(fc(X, 'pi_vf_fc1', nh=units_per_hlayer[0]))  # , init_scale=np.sqrt(2)))
+                h2 = tf.nn.relu6(fc(h1, 'pi_vf_fc2', nh=units_per_hlayer[1]))  # , init_scale=np.sqrt(2)))
+                # h3 = tf.nn.relu6(fc(h2, 'pi_fc1', nh=units_per_hlayer[2]))  # , init_scale=np.sqrt(2)))
+            elif activ_fcn == 'elu':
+                h1 = tf.nn.elu(fc(X, 'pi_vf_fc1', nh=units_per_hlayer[0]))  # , init_scale=np.sqrt(2)))
+                h2 = tf.nn.elu(fc(h1, 'pi_vf_fc2', nh=units_per_hlayer[1]))  # , init_scale=np.sqrt(2)))
+                # h3 = tf.nn.elu(fc(h2, 'pi_fc1', nh=units_per_hlayer[2]))  # , init_scale=np.sqrt(2)))
+            elif activ_fcn == 'mixed':
+                h1 = tf.nn.relu6(fc(X, 'pi_vf_fc1', nh=units_per_hlayer[0]))  #, init_scale=np.sqrt(2)))
+                h2 = tf.nn.elu(fc(h1, 'pi_vf_fc2', nh=units_per_hlayer[1]))  #, init_scale=np.sqrt(2)))
+                # h3 = tf.nn.tanh(fc(h2, 'pi_fc1', nh=units_per_hlayer[2]))  #, init_scale=np.sqrt(2)))
+
+            # The output matrix [nbatch x trace_length, h_units] of layer 2 needs to be reshaped to a vector with
+            # dimensions: [nbatch , trace_length , h_units] for rnn processing.
+            rnn_cell = tf.contrib.rnn.BasicLSTMCell(num_units=units_per_hlayer[1], state_is_tuple=True)
+            rnn_input = tf.reshape(h2, shape=[nenvs, nsteps, units_per_hlayer[1]])
+            rnn_state_in = rnn_cell.zero_state(batch_size=nenvs,
+                                               dtype=tf.float32)  # reset the state in every training iteration
+            rnn_output, rnn_state_out = tf.nn.dynamic_rnn(inputs=rnn_input,
+                                                          cell=rnn_cell,
+                                                          initial_state=rnn_state_in,
+                                                          dtype=tf.float32,
+                                                          scope="model" + '_rnn')
+            # The output of the recurrent cell then needs to be reshaped to the original matrix shape.
+            rnn_output = tf.reshape(rnn_output, shape=[-1, units_per_hlayer[1]])
+
+            if activ_fcn == 'relu6':
+                activ = tf.nn.relu6
+            elif activ_fcn == 'elu':
+                activ = tf.nn.elu
+            elif activ_fcn == 'mixed':
+                activ = tf.nn.tanh
+            h3 =activ(fc(rnn_output, 'pi_fc1', nh=units_per_hlayer[2]))  # , init_scale=np.sqrt(2)))
+            # h4 = tf.nn.tanh(fc(rnn_output, 'pi_fc1', nh=units_per_hlayer[2]))  # , init_scale=np.sqrt(2)))
+            pi_logit = fc(h3, 'pi', nact, init_scale=0.01)
+            pi = tf.nn.softmax(pi_logit)
+
+            vf = fc(rnn_output, 'vf', 1)[:, 0]
+            logstd = tf.get_variable(name="logstd", shape=[1, nact],
+                                     initializer=tf.zeros_initializer())
+
+        # pdparam = tf.concat([pi, pi * 0.0 + logstd], axis=1)
+        # self.pdtype = make_pdtype(ac_space)
+        # self.pd = self.pdtype.pdfromflat(pdparam)
+        # self.pd = CategoricalPd(pi_logit)  # pdparam
+        # a0 = self.pd.sample()  # returns action index: 0,1
+        a0 = tf.argmax(pi_logit, axis=1)
+        # a0 = np.random.choice(ac_space, p=pi)  # returns action value: 119,None
+        # a0 = random_choice(sess, np.ones(shape=(nbatch, nact)) * np.array(range(nact)).T, pi)
+        # neglogp0 = self.pd.neglogp(a0)
+
+        # The rnn state consists of the "cell state" c and the "input vector" x_t = h_{t-1}
+        self.initial_state = (np.zeros([nenvs, units_per_hlayer[1]]), np.zeros([nenvs, units_per_hlayer[1]]))
+
+        def step(ob, r_state):
+            a, v, r_state_out = sess.run([a0, vf, rnn_state_out], {X: ob, rnn_state_in: r_state})
+            return a, v, r_state_out
+
+        def value(ob, r_state):
+            return sess.run(vf, {X: ob, rnn_state_in: r_state})
+
+        self.X = X
+        self.pi = pi
+        self.pi_logit = pi_logit
+        self.vf = vf
+        self.ac = a0
+        self.rnn_state_in = rnn_state_in
+        self.rnn_state_out = rnn_state_out
         self.step = step
         self.value = value
 
@@ -414,12 +518,14 @@ class DQN():
     """
     Deep Q Network class based on TensorFlow.
     """
-    def __init__(self, sess, ob_space, num_actions, batch_size, units_per_hlayer, scope=None, reuse=False):
+    def __init__(self, sess, ob_space, nact, nbatch, units_per_hlayer, scope=None, reuse=False):
         nd, = ob_space.shape
+        ob_shape = (nbatch, nd)
+
         prefix = "target_" if (scope == "target") else ""
 
         self.obs_in = tf.placeholder(shape=[None, nd], dtype=tf.float32,
-                                     name=prefix + "state_in")  # observations
+                                     name=prefix + "Ob")  # observations
 
         # Network Architecture
         with tf.variable_scope(scope, reuse=tf.AUTO_REUSE): # leads to error when assigning weights to target network
@@ -441,9 +547,11 @@ class DQN():
             #                      activation=tf.nn.elu,
             #                      kernel_initializer=tf.random_uniform_initializer(-0.1, 0.1),
             #                      name='dqn_h3')
+
+
         # Output: predicted Q values of each action
-        self.predQ = tf.layers.dense(h3, num_actions, activation=None, kernel_initializer=None)
-        a0 = np.argmax(self.predQ)
+        self.predQ = tf.layers.dense(h3, nact, activation=None, kernel_initializer=None)
+        a0 = tf.arg_max(self.predQ, dimension=1)
 
         def predict(obs, dones, lstm_states):
             """
@@ -461,28 +569,109 @@ class DQN():
         self.predict = predict
         self.step = step
 
+
+class DRQN():
+    """
+    Deep Recurrent Q Network class based on TensorFlow.
+    """
+    def __init__(self, sess, ob_space, nact, nbatch, trace_length, units_per_hlayer, scope=None, reuse=False, activ_fcn='relu6'):
+        nd, = ob_space.shape
+        nflat_batch = nbatch * trace_length
+        ob_shape = [nflat_batch, nd]
+        self.obs_in = tf.placeholder(shape=ob_shape, dtype=tf.float32,
+                                     name=scope + "_obs")  # observations
+        # Network Architecture
+        with tf.variable_scope(scope, reuse=reuse):  # leads to error when assigning weights to target network
+            if activ_fcn == 'relu6':
+                h1 = tf.nn.relu6(fc(self.obs_in, 'dqn_h1', nh=units_per_hlayer[0]))
+                h2 = tf.nn.relu6(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
+                h3 = tf.nn.relu6(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
+            elif activ_fcn == 'elu':
+                h1 = tf.nn.elu(fc(self.obs_in, 'dqn_h1', nh=units_per_hlayer[0]))
+                h2 = tf.nn.elu(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
+                h3 = tf.nn.elu(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
+            elif activ_fcn == 'mixed':
+                h1 = tf.nn.elu(fc(self.obs_in, 'dqn_h1', nh=units_per_hlayer[0]))
+                h2 = tf.nn.tanh(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
+                h3 = tf.nn.elu(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
+            # The output matrix [nbatch x trace_length, h_units] of layer 3 needs to be reshaped to a vector with
+            # dimensions: [nbatch x trace_length x h_units] for rnn processing.
+            rnn_cell = tf.contrib.rnn.BasicLSTMCell(num_units=units_per_hlayer[2], state_is_tuple=True)
+            rnn_input = tf.reshape(h3, shape=[nbatch, trace_length, units_per_hlayer[2]])
+            rnn_state_in = rnn_cell.zero_state(batch_size=nbatch, dtype=tf.float32)  # reset the state in every training iteration
+
+            rnn_output, rnn_state_out = tf.nn.dynamic_rnn(inputs=rnn_input,
+                                                          cell=rnn_cell,
+                                                          initial_state=rnn_state_in,
+                                                          dtype=tf.float32,
+                                                          scope=scope+'_rnn')
+            # The output of the recurrent cell then needs to be reshaped to the original matrix shape.
+            rnn_output = tf.reshape(rnn_output, shape=[-1, units_per_hlayer[2]])
+
+            # If dueling Q network: split output of RNN cell into Value and Advantage part
+            # Here: only use output as Value function
+
+            # Output: predicted Q values of the best action with linear activation.
+            self.predQ = tf.layers.dense(rnn_output, nact, activation=None, kernel_initializer=None)
+            a0 = tf.arg_max(self.predQ, dimension=1)
+
+        def predict(obs, rnn_state):
+            """
+            Args:
+                sess: TensorFlow session
+                obs: array of observations for which we want to predict the actions. [batch_size]
+            Return:
+                The prediction of the output tensor. [batch_size, n_valid_actions]
+            """
+            return sess.run([self.predQ, rnn_state_out], feed_dict={self.obs_in: obs, rnn_state_in: rnn_state})
+
+        def step(obs_in, rnn_state):
+            return sess.run([a0, rnn_state_out], feed_dict={self.obs_in: obs_in, rnn_state_in: rnn_state})
+
+        def state(obs, rnn_state):
+            return sess.run(rnn_state_out, feed_dict={self.obs_in: obs, rnn_state_in: rnn_state})
+
+        self.rnn_state_in = rnn_state_in
+        self.rnn_state_out = rnn_state_out
+        self.predict = predict
+        self.step = step
+        self.state = state
+
+
 class DQN_smac():
     """
     Deep Q Network class based on TensorFlow.
     """
 
-    def __init__(self, sess, ob_space, num_actions, batch_size, units_per_hlayer, scope=None, reuse=False):
+    def __init__(self, sess, ob_space, nact, nbatch, units_per_hlayer, scope=None, reuse=False, activ_fcn='relu6'):
         nd, = ob_space.shape
         prefix = "target_" if (scope == "target") else ""
 
-        X = tf.placeholder(shape=(batch_size, nd), dtype=tf.float32,
+        X = tf.placeholder(shape=(nbatch, nd), dtype=tf.float32,
                            name=prefix + "Ob")  # observations
 
         # Network Architecture
         with tf.variable_scope(scope, reuse=reuse):  # leads to error when assigning weights to target network
-            h1 = tf.nn.elu(fc(X, 'dqn_h1', nh=units_per_hlayer[0]))
-            h2 = tf.nn.elu(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
-            h3 = tf.nn.elu(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
-            predQ = fc(h3, 'predQ', num_actions, init_scale=0.01)
-        # a0 = np.argmax(predQ)
-        #
-        # def step(obs, *_args, **_kwargs):
-        #     return sess.run(a0, feed_dict={X: obs})
+            if activ_fcn == 'relu6':
+                h1 = tf.nn.relu6(fc(X, 'dqn_h1', nh=units_per_hlayer[0]))
+                h2 = tf.nn.relu6(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
+                h3 = tf.nn.relu6(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
+            elif activ_fcn == 'elu':
+                h1 = tf.nn.elu(fc(X, 'dqn_h1', nh=units_per_hlayer[0]))
+                h2 = tf.nn.elu(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
+                h3 = tf.nn.elu(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
+            elif activ_fcn == 'mixed':
+                h1 = tf.nn.elu(fc(X, 'dqn_h1', nh=units_per_hlayer[0]))
+                h2 = tf.nn.tanh(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
+                h3 = tf.nn.elu(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
+            # h1 = tf.nn.elu(fc(X, 'dqn_h1', nh=units_per_hlayer[0]))
+            # h2 = tf.nn.elu(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
+            # h3 = tf.nn.elu(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
+            predQ = fc(h3, 'predQ', nact, init_scale=0.01)
+        a0 = tf.arg_max(predQ, dimension=1)
+
+        def step(obs, *_args, **_kwargs):
+            return sess.run(a0, feed_dict={X: obs})
 
         def predict(obs, *_args, **_kwargs):
             """
@@ -494,12 +683,12 @@ class DQN_smac():
             """
             return sess.run(predQ, feed_dict={X: obs})
 
-        def step(obs, epsilon, *_args, **_kwargs):  # epsilon greedy policy
-            QP = sess.run(predQ, feed_dict={X: obs})
-            best_ac = np.argmax(QP)
-            AP = np.ones(num_actions, dtype=float) * epsilon / num_actions
-            AP[best_ac] += (1.0 - epsilon)
-            return AP
+        # def step(obs, epsilon, *_args, **_kwargs):  # epsilon greedy policy
+        #     QP = sess.run(predQ, feed_dict={X: obs})
+        #     best_ac = np.argmax(QP)
+        #     AP = np.ones(nact, dtype=float) * epsilon / nact
+        #     AP[best_ac] += (1.0 - epsilon)
+        #     return AP
 
         self.X = X
         # self.ac = a0
