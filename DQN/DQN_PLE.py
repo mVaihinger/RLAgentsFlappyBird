@@ -1,14 +1,16 @@
 # Deep Q Learning Agent using experience replay and a target network.
 import numpy as np
-import sys, os, datetime
+import sys, os, datetime, time
+import csv
 import tensorflow as tf
 import joblib
 import logging
+from collections import deque
 # from collections import namedtuple
 
 from models_OAI import DQN, DQN_smac
 from utils_OAI import ReplayBuffer
-from utils_OAI import make_epsilon_greedy_policy, normalize_obs
+from utils_OAI import make_epsilon_greedy_policy, normalize_obs, update_target_graph
 from utils_OAI import Scheduler, make_path, find_trainable_variables, make_session, set_global_seeds
 
 # TODO: implement saving of checkpoints
@@ -36,8 +38,9 @@ class DQNAgent():
     Neural Network class based on TensorFlow.
     """
 
-    def __init__(self, ob_space, ac_space, scope, lr, lrschedule, max_grad_norm,
-                 units_per_hlayer, batch_size, total_timesteps, log_interval, logdir):
+    def __init__(self, ob_space, ac_space, lr, lrschedule, max_grad_norm,
+                 units_per_hlayer, batch_size, total_timesteps, log_interval, update_interval, logdir, keep_model,
+                 activ_fcn, tau):
         self.logger = logging.getLogger(self.__module__ + "." + self.__class__.__name__)
         self.logger.info("Set up DQN learning agent")
         self.num_steps_trained = 0
@@ -59,15 +62,17 @@ class DQNAgent():
 
         # nbatch = self.target_in.shape[1].value if (self.target_in.shape[0].value is not None) else 0
 
-        eval_model = DQN_smac(sess, ob_space, ac_space.n, batch_size=1, units_per_hlayer=units_per_hlayer,
-                         scope=scope, reuse=False)
-        train_model = DQN_smac(sess, ob_space, ac_space.n, batch_size=batch_size, units_per_hlayer=units_per_hlayer,
-                          scope=scope, reuse=True)
+        eval_model = DQN_smac(sess, ob_space, ac_space.n, nbatch=1, units_per_hlayer=units_per_hlayer,
+                         scope='model', reuse=False, activ_fcn=activ_fcn)
+        train_model = DQN_smac(sess, ob_space, ac_space.n, nbatch=batch_size, units_per_hlayer=units_per_hlayer,
+                          scope='model', reuse=True, activ_fcn=activ_fcn)
         # target_model = TargetNetwork(sess, ob_space, ac_space.n)
+        target_model = DQN_smac(sess, ob_space, ac_space.n, nbatch=batch_size, units_per_hlayer=units_per_hlayer,
+                               scope='target', reuse=False, activ_fcn=activ_fcn)
 
         loss = tf.losses.mean_squared_error(labels=QT, predictions=tf.gather_nd(params=train_model.predQ,
                                                                                 indices=A))
-        params = tf.trainable_variables(scope)
+        params = tf.trainable_variables()  # was set to 'model', but we would need model and target parameters
         optimizer = tf.train.AdamOptimizer(lr)
         # self.train_step = self.optimizer.minimize(self.loss)
         gradients = optimizer.compute_gradients(loss)
@@ -76,7 +81,7 @@ class DQNAgent():
             grads, grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
         grads = list(zip(grads, params))
         _train = [optimizer.apply_gradients(grads),
-                  self.global_step.assign_add(nbatch)]
+                  self.global_step.assign_add(update_interval)]  # nbatch
 
         if log_interval > 0:
             for g, v in grads:
@@ -115,12 +120,30 @@ class DQNAgent():
                 self.logger.info('Save summary of network weights, grads and losses.')
                 summary_str = sess.run(self.summary_step, feed_dict)
                 self.summary_writer.add_summary(tf.Summary.FromString(summary_str), global_step)
+
+            # # In config evaluation mode save model regularly to track performance of the learning agent.
+            # if save_interval > 0 and (self.num_steps_trained % save_interval == 0):
+            #     self.logger.info('Save model at train step %s' % self.num_steps_trained)
+            #     self.save('config_model')
+
             self.num_steps_trained += 1
 
             return total_loss
 
         # tf.add_to_collection(tf.GraphKeys.TRAIN_OP, self.pred_out)
         saver = tf.train.Saver(max_to_keep=7)
+        # saver = tf.train.Saver(max_to_keep=keep_model)
+
+        def update_target(target_op_holder):
+            for op in target_op_holder:
+                sess.run(op)
+            a = tf.trainable_variables()[0].eval(session=sess)
+            b = tf.trainable_variables()[len(params)//2].eval(session=sess)
+            if not a.all() == b.all():
+                print("Target Set Failed")
+                # print("Target Set Success")
+            # else:
+            #     print("Target Set Failed")
 
         def save(f_name):
             gs = sess.run(self.global_step)
@@ -138,14 +161,44 @@ class DQNAgent():
             #     restores.append(p.assign(loaded_p))
             # ps = sess.run(restores)
 
+        def test_run(env, n_eps, n_pipes):
+            self.logger.debug('Evaluating eval_model')
+            ep_return = []
+            ep_length = []
+            for i in range(0, n_eps):  # TODO parallelize this here!
+                obs = env.reset()
+                obs = normalize_obs(obs)
+                done = False
+                total_return = 0
+                total_length = 0
+
+                while not done and (total_return < n_pipes):
+                    pQ = sess.run([eval_model.predQ], feed_dict={eval_model.X: [obs]})
+                    ac = np.argmax(pQ)
+                    obs, reward, done, _ = env.step(ac)
+                    # obs, reward, done, _ = env.step(act[0][0])
+                    obs = normalize_obs(obs)
+                    total_length += 1
+                    total_return += reward
+                # logger.debug('*****************************************')
+                self.logger.info('Episode %s: %s, %s' % (i, total_return, total_length))
+                ep_length.append(total_length)
+                ep_return.append(total_return)
+            return ep_return
+
         self.train = train
         self.train_model = train_model
         self.step_model = eval_model
+        self.target_model = target_model
+        self.target_ops = update_target_graph(params, tau)  # TODO implement update_target_graph
+
+        self.update_target = update_target
+
         self.step = eval_model.step
         self.predict = eval_model.predict
-        # self.target_model = target_model
         self.save = save
         self.load = load
+        self.test_run = test_run
 
         if log_interval > 0:
             self.summary_writer = tf.summary.FileWriter(logdir, graph_def=sess.graph_def)
@@ -190,10 +243,11 @@ class TargetNetwork(DQN):
         return op_holder
 
 
-def q_learning(env, seed, total_timesteps=int(1e8), gamma=0.95, epsilon=0.4, epsilon_decay=.95,
+def q_learning(env, test_env, seed, total_timesteps=int(1e8), gamma=0.95, epsilon=0.4, epsilon_decay=.95,
                max_replay_buffer_size=4000, batch_size=128, lr=5e-4, lrschedule='linear',
                max_grad_norm=0.01, units_per_hlayer=(8,8,8),
-               target=None, log_interval= 100, show_interval=0, logdir=None):
+               target=None, log_interval= 100, test_interval=0, show_interval=0, update_interval=30, logdir=None,
+               keep_model=7, activ_fcn='relu6', tau=0.99):
     """
     Q-Learning algorithm for off-policy TD control using Function Approximation.
     Finds the optimal greedy policy while following an epsilon-greedy policy.
@@ -217,6 +271,8 @@ def q_learning(env, seed, total_timesteps=int(1e8), gamma=0.95, epsilon=0.4, eps
         An EpisodeStats object with two numpy arrays for episode_lengths and episode_rewards.
     """
     logger = logging.getLogger(__name__)
+    logger.info(datetime.time)
+
     tf.reset_default_graph()
     set_global_seeds(seed)
 
@@ -231,13 +287,18 @@ def q_learning(env, seed, total_timesteps=int(1e8), gamma=0.95, epsilon=0.4, eps
     agent = DQNAgent(ob_space, ac_space, batch_size=batch_size,
                      lr=lr,
                      lrschedule=lrschedule,
-                     scope="model",
                      max_grad_norm=max_grad_norm,
                      units_per_hlayer=units_per_hlayer,
                      total_timesteps=total_timesteps,
                      log_interval=log_interval,
-                     logdir=logdir)
+                     update_interval=update_interval,
+                     logdir=logdir,
+                     keep_model=keep_model,
+                     activ_fcn=activ_fcn,
+                     tau=tau)
     summary_writer = agent.get_summary_writer()
+    result_path = os.path.join(logdir, 'results.csv')
+
     if use_exp_replay:
         replay_buffer = ReplayBuffer(max_replay_buffer_size)
 
@@ -246,43 +307,66 @@ def q_learning(env, seed, total_timesteps=int(1e8), gamma=0.95, epsilon=0.4, eps
 
     # ------------------ TRAINING --------------------------------------------
     logger.info("Start Training")
-    i_episode = 0
+    i_episode, i_sample, i_train = 0, 0, 0
+    len, rew = 0, 0
+    rolling_mean = deque(maxlen=30)
     nbatch = batch_size
-    max_return = 0
+    return_threshold = 40
 
     # Reset env
     obs = env.reset()
+    obs = normalize_obs(obs)
     done = False
 
-    for update in range(1, total_timesteps//nbatch + nbatch):  # as we start training only after nbatch experiences
+    # TODO
+    # Set the target network to be equal to the primary network
+    agent.update_target(agent.target_ops)
 
-        # Update target network
-        if target:
-            target.update()
+    # for update in range(1, total_timesteps//nbatch + nbatch):  # as we start training only after nbatch experiences
+    while i_sample < total_timesteps:
+
+        # # Update target network
+        # if target:
+        #     target.update()
 
         # action_probs = policy([obs], epsilon)
         # action = np.random.choice(np.arange(len(action_probs)), p=action_probs)
 
-        AP = agent.step([obs], epsilon=epsilon)  # epsilon greedy action
-        action = np.random.choice(np.arange(n_ac), p=AP)
+        # AP = agent.step([obs], epsilon=epsilon)  # epsilon greedy action
+        # action = np.random.choice(np.arange(n_ac), p=AP)
+        if np.random.rand(1) < epsilon:
+            _ = agent.step([obs])  # epsilon greedy action
+            action = np.random.randint(0, n_ac)
+        else:
+            AP = agent.step([obs])  # epsilon greedy action
+            print(AP, agent.predict([obs]))
+            action = AP[0]
         next_obs, reward, done, _ = env.step(action)
-
-        # process reward and observations
-        reward -= 1e-5
         next_obs = normalize_obs(next_obs)
-
+        reward -= 1e-5
+        i_sample += 1
         # render only every i-th episode
         if show_interval != 0:
             if i_episode % show_interval == 0:
                 env.render()
+                # time.sleep(0.2)
 
         # episode stats
-        stats['episode_lengths'][i_episode] += 1
-        stats['episode_rewards'][i_episode] += reward
+        # stats['episode_lengths'][i_episode] += 1
+        # stats['episode_rewards'][i_episode] += reward
+        len += 1  # TODO check whether this works
+        rew += reward
+        rolling_mean.append(reward)
+
+        # TODO use scalar len and reward variable to not need to access the array everytime
+
 
         # When episode is done, add episode information to tensorboard summary and stats
         if done:  # env.game_over():
-            next_obs = np.ones(len(next_obs)) * 0
+            next_obs = list(np.zeros_like(next_obs, dtype=np.float32))
+
+            stats['episode_lengths'].append(len)
+            stats['episode_rewards'].append(rew)
 
             if summary_writer is not None:
                 summary = tf.Summary()
@@ -293,55 +377,90 @@ def q_learning(env, seed, total_timesteps=int(1e8), gamma=0.95, epsilon=0.4, eps
                 summary_writer.add_summary(summary, i_episode)
                 summary_writer.flush()
 
-            # avg_ep_return = np.mean(stats["episode_rewards"][-30:])
-            # if avg_ep_return > -4.99 and avg_ep_return >= (max_avg_ep_return + 5):
-            #     max_avg_ep_return = avg_ep_return
-            #     model.save(logdir, 'inter_model', )
-
-            if stats["episode_rewards"][i_episode] > max_return:
-                max_return = stats["episode_rewards"][i_episode]
-                logger.info('Save model at max reward %s' % max_return)
+            if rew > return_threshold:
+                return_threshold = rew
+                logger.info('Save model at max reward %s' % return_threshold)
                 agent.save('inter_model')
 
             i_episode += 1
-            stats['episode_lengths'].append(0)
-            stats['episode_rewards'].append(0)
-
-            # if i_episode > 0:
-            # Print out which episode we're on, useful for debugging.
-            # Also print return for last episode
-            # last_reward = stats['episode_rewards'][i_episode]  # stats.episode_rewards[i_episode - 1]
-            # avg_reward = np.mean(stats['episode_rewards'][max(i_episode-100, 0):i_episode])
-            # print("\rEpisode {} ({}), avg reward: {}".format(i_episode + 1, last_reward, avg_reward), end="")
-            # sys.stdout.flush()
+            len, rew = 0, 0
 
         # Compute TD target and update the model
-        if use_exp_replay:
+        if use_exp_replay:  # TODO add update_interval?
             # Update replay buffer
             replay_buffer.add_transition(obs, action, next_obs, reward, done)
 
-            if replay_buffer.size() > nbatch:
+            if replay_buffer.size() > nbatch and (i_sample % update_interval == 0):
+
+                if summary_writer is not None and (env.spec._env_name == 'ContFlappyBird'):
+                    rm = sum(rolling_mean)/30
+                    s_summary = tf.Summary()
+                    s_summary.value.add(tag='envs/isample_return',
+                                      simple_value=rm)
+                    summary_writer.add_summary(s_summary, i_sample)
+
+                    t_summary = tf.Summary()
+                    t_summary.value.add(tag='envs/itrain_return',
+                                      simple_value=rm)
+                    summary_writer.add_summary(t_summary, i_train)
+                    summary_writer.flush()
+
+                # avg_ep_return = np.mean(stats["episode_rewards"][-30:])
+                # if avg_ep_return > -4.99 and avg_ep_return >= (max_avg_ep_return + 5):
+                #     max_avg_ep_return = avg_ep_return
+                #     model.save(logdir, 'inter_model', )
+
+                if rew > return_threshold and (env.spec._env_name == 'ContFlappyBird'):
+                    return_threshold = rew
+                    logger.info('Save model at max reward %s' % return_threshold)
+                    agent.save('inter_model')
+
+                agent.update_target(agent.target_ops)
+
                 # Sample minibatch from replay buffer
                 mb_obs, mb_actions, mb_next_obs, mb_rewards, _, batch_dones = \
-                    replay_buffer.next_batch(nbatch)
-
-                mb_actions = list(zip(range(len(mb_actions)), mb_actions))
+                    replay_buffer.recent_and_next_batch(nbatch)
+                # mb_obs, mb_actions, mb_next_obs, mb_rewards, _, batch_dones = \
+                #     replay_buffer.next_batch(nbatch)
+                mb_actions = list(zip(range(mb_actions.shape[0]), mb_actions))
 
                 # Calculate TD target for batch. Use "old" fixed parameters if target network is available
                 # to compute targets else use "old" parameters of value function estimate.
                 # mb_next_obs = np.reshape(mb_next_obs, (-1, nd))
-                mb_next_q_values = (target if target else agent.train_model).predict(mb_next_obs)
+                mb_next_q_values = (agent.target_model if target else agent.train_model).predict(mb_next_obs)
                 mb_best_next_action = np.argmax(mb_next_q_values, axis=1)
                 mb_td_target = [mb_rewards[j] + gamma * mb_next_q_values[j][mb_best_next_action[j]]
                                 for j in range(nbatch)]
 
                 # Update Q value estimator parameters by optimizing between Q network and Q-learning targets
                 loss = agent.train(mb_obs, mb_actions, mb_td_target)
+                i_train += 1
+
+                # If test_interval > 0 the learned model is evaluated every "test_interval" gradient updates
+                if test_interval > 0 and i_train > 0 and (i_train % test_interval == 0):
+                    print('testing')
+                    ep_return = agent.test_run(test_env, n_eps=30, n_pipes=2000)
+                    print(ep_return)
+                    with open(result_path, "a") as csvfile:
+                        writer = csv.writer(csvfile)
+                        ep_return = [str(p) for p in ep_return]
+                        ep_return.insert(0, ('step_%s' % i_sample))
+                        writer.writerow(ep_return)
         else:
             next_q_values = (target if target else agent).predict([next_obs])
             best_next_action = np.argmax(next_q_values, axis=1)
             td_target = reward + (gamma * next_q_values[0] * best_next_action)
             loss = agent.train([obs], [[0, action]], td_target)
+            i_train += 1
+
+            # If test_interval > 0 the learned model is evaluated every "test_interval" gradient updates
+            if test_interval > 0 and i_train > 0 and (i_train % test_interval == 0):
+                ep_return = agent.test_run(test_env, n_eps=30, n_pipes=2000)
+                with open(result_path, "a") as csvfile:
+                    writer = csv.writer(csvfile)
+                    ep_return = [str(p) for p in ep_return]
+                    ep_return.insert(0, ('step_%s' % i_sample))
+                    writer.writerow(ep_return)
 
         if done:
             # Reset the model
@@ -353,7 +472,13 @@ def q_learning(env, seed, total_timesteps=int(1e8), gamma=0.95, epsilon=0.4, eps
 
     # Save final model when training is finished.
     agent.save('final_model')
-    logger.info('Finished Training. Saving Final model.\n')
+    logger.info('Finished Training. Saving Final model.')
+
+    logger.info('*******************************************************')
+    logger.info('Total number of interactions with the environment: %s' % i_sample)
+    logger.info('Total number of finished episodes during training: %s' % i_episode)
+    logger.info('Total number of parameter updates during training: %s' % i_train)
+    logger.info('*******************************************************\n')
 
     # return stats
 
@@ -363,32 +488,40 @@ if __name__ == '__main__':
     # Params
     DISCOUNT = 0.90
     EPSILON = 0.5
-    EPS_DECAY = 0.995
+    EPS_DECAY = 0.8
     LR=5e-4
-    MAX_REPLAY_BUF_SIZE = 10000
-    BATCH_SIZE = 50
-    MAX_GRAD_NORM=0.5
+    MAX_REPLAY_BUF_SIZE = 1000
+    BATCH_SIZE = 30
+    MAX_GRAD_NORM=0.1
     NUM_TRAIN_UPDATES = int(2e6)
-    TARGET = None
+    TARGET = True
     SAVE_INTERVAL = 500
-    LOG_INTERVAL = 30
+    LOG_INTERVAL = 5
     DATE = str(datetime.datetime.today())
     LOGDIR = os.path.join('/home/mara/Desktop/logs/DQN', DATE)
 
     seed = 1
-    env = make_ple_env('FlappyBird-v1', seed=seed)
-    q_learning(env, seed=seed,
+    env = make_ple_env('ContFlappyBird-v1', seed=seed)
+    test_env = make_ple_env('ContFlappyBird-v1', seed=seed)
+    # env = make_ple_env('FlappyBird-v1', seed=seed)
+    # test_env = make_ple_env('FlappyBird-v1', seed=seed)
+    q_learning(env=env,
+               test_env=test_env,
+               seed=seed,
                total_timesteps=NUM_TRAIN_UPDATES,
                gamma=DISCOUNT,
                epsilon=EPSILON,
                epsilon_decay=EPS_DECAY,
+               tau=0.99,
                lr=LR,
                max_replay_buffer_size=MAX_REPLAY_BUF_SIZE,
                batch_size=BATCH_SIZE,
                max_grad_norm=MAX_GRAD_NORM,
-               units_per_hlayer=(24,24,24),
+               units_per_hlayer=(8,8,8),
                target=TARGET,
                log_interval=LOG_INTERVAL,
-               show_interval=20,
-               logdir=LOGDIR)
+               test_interval=0,
+               show_interval=1,
+               logdir=LOGDIR,
+               activ_fcn='relu6')
     env.close()

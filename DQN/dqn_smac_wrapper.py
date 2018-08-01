@@ -12,43 +12,62 @@ from smac.scenario.scenario import Scenario
 from smac.facade.smac_facade import SMAC
 
 import sys, os, datetime, glob
-sys.path.append('/media/mara/OS/Users/Mara/Documents/Masterthesis/RLAgents/RLAgentsFlappyBird')
-# sys.path.append('RLAgents_FlappyBird')
-from run_dqn import run_dqn_smac
+sys.path.append(os.path.dirname(sys.path[0]))
+from DQN.run_dqn import run_dqn_smac
+from run_ple_utils import arg_parser
 
-def arg_parser():
-    import argparse
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    # TODO add buffer size
-    # parser.add_argument('--gamma', help='Discount factor for discounting the reward', type=float, default=0.90)
+
+# def arg_parser():
+#     import argparse
+#     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+#     # TODO add buffer size
+#     # parser.add_argument('--gamma', help='Discount factor for discounting the reward', type=float, default=0.90)
+#     # parser.add_argument('--epsilon', help='Epsilon for epsilon-greedy policy', type=float, default=0.5)
+#     # parser.add_argument('--epsilon_decay', help='Epsilon decay rate', type=float, default=0.995)
+#     # parser.add_argument('--lr', help='Learning Rate', type=float, default=5e-4)
+#     parser.add_argument('--lrschedule', help='Learning Rate Decay Schedule',
+#                         choices=['constant', 'linear', 'double_linear_con'], default='constant')
+#     parser.add_argument('--buffer_size', help='Replay buffer size', type=float, default=5000)
+#     parser.add_argument('--max_grad_norm', help='Maximum gradient norm up to which gradient is not clipped', type=float,
+#                         default=0.01)
+#     parser.add_argument('--log_interval',
+#                         help='parameter values stored in tensorboard summary every <log_interval> model update step. 0 --> no logging ',
+#                         type=int, default=500)
+#     parser.add_argument('--save_interval', help='Model is saved after <save_interval> model updates', type=int,
+#                         default=500)
+#     parser.add_argument('--show_interval', help='Env is rendered every n-th episode. 0 = no rendering', type=int,
+#                         default=0)
+#     parser.add_argument('--logdir', help='directory where logs are stored',
+#                         default='/home/mara/Desktop/logs/DQN')  # '/mnt/logs/A2C')
+#     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
+#     parser.add_argument('--total_timesteps', help='Total number of env steps', type=int, default=int(2e5))
+#     parser.add_argument('--runcount_limit', help='amount of algorithm evaluations allowed to optimize hyperparameters',
+#                         type=int, default=int(3))
+#     parser.add_argument('--eval_model', help='eval all stored models or only final model', choices=['all', 'final'],
+#                         default='all')
+#     parser.add_argument('--run_parallel', help='flag which determine whethe smac instances are run in parallel or not.',
+#                         choices=["True", "true", "False", "false"], type=str, default="false")
+#     parser.add_argument('--instance_id', help='id of the smac instance', type=int, default=1)
+#     args = parser.parse_args()
+#     return args
+
+def dqn_arg_parser():
+    parser = arg_parser()
+    parser.add_argument('--gamma', help='Discount factor for discounting the reward', type=float, default=0.90)
+    parser.add_argument('--batch_size', help='Batch size. Number of sampless drawn from buffer, which are used to update the model.',
+                        type=int, default=50)
     # parser.add_argument('--epsilon', help='Epsilon for epsilon-greedy policy', type=float, default=0.5)
     # parser.add_argument('--epsilon_decay', help='Epsilon decay rate', type=float, default=0.995)
-    # parser.add_argument('--lr', help='Learning Rate', type=float, default=5e-4)
+    parser.add_argument('--lr', help='Learning Rate', type=float, default=5e-4)
     parser.add_argument('--lrschedule', help='Learning Rate Decay Schedule',
                         choices=['constant', 'linear', 'double_linear_con'], default='constant')
-    parser.add_argument('--buffer_size', help='Replay buffer size', type=float, default=5000)
+    parser.add_argument('--buffer_size', help='Replay buffer size', type=int, default=int(5000))
     parser.add_argument('--max_grad_norm', help='Maximum gradient norm up to which gradient is not clipped', type=float,
                         default=0.01)
-    parser.add_argument('--log_interval',
-                        help='parameter values stored in tensorboard summary every <log_interval> model update step. 0 --> no logging ',
-                        type=int, default=500)
-    parser.add_argument('--save_interval', help='Model is saved after <save_interval> model updates', type=int,
-                        default=500)
-    parser.add_argument('--show_interval', help='Env is rendered every n-th episode. 0 = no rendering', type=int,
-                        default=0)
-    parser.add_argument('--logdir', help='directory where logs are stored',
-                        default='/home/mara/Desktop/logs/DQN')  # '/mnt/logs/A2C')
-    parser.add_argument('--seed', help='RNG seed', type=int, default=0)
-    parser.add_argument('--total_timesteps', help='Total number of env steps', type=int, default=int(2e5))
-    parser.add_argument('--runcount_limit', help='amount of algorithm evaluations allowed to optimize hyperparameters',
-                        type=int, default=int(3))
-    parser.add_argument('--eval_model', help='eval all stored models or only final model', choices=['all', 'final'],
-                        default='all')
-    parser.add_argument('--run_parallel', help='flag which determine whethe smac instances are run in parallel or not.',
-                        choices=["True", "true", "False", "false"], type=str, default="false")
-    parser.add_argument('--instance_id', help='id of the smac instance', type=int, default=1)
-    args = parser.parse_args()
-    return args
+    parser.add_argument('--update_interval', type=int, default=5,
+                        help='Frequency with which the network model is updated based on minibatch data.')
+    return parser.parse_args()
+
 
 def dqn_smac_wrapper(**params):
 
@@ -72,7 +91,7 @@ def dqn_smac_wrapper(**params):
         :return: A quality score of the algorithms perfromance
         """
 
-        # For deactivated paraeters the configuration stores None-values
+        # For deactivated parameters the configuration stores None-values
         # This is not accepted by the a2c algorithm, hence we remove them.
         cfg = {k: cfg[k] for k in cfg if cfg[k]}
 
@@ -88,7 +107,7 @@ def dqn_smac_wrapper(**params):
         logger.info('performance variance: %s' % var_perf)
         logger.info('maximum episode return: %s' % max_return)
 
-        score = - (avg_perf - 0.2 * var_perf + 0.5 * max_return)  # SMAC is minimizing this.
+        score = - avg_perf  # - (avg_perf - 0.2 * var_perf + 0.5 * max_return)  # SMAC is minimizing this.
         logger.info('Quality measure of the current learned agent: %s\n' % score)
         return score
 
@@ -105,14 +124,14 @@ def dqn_smac_wrapper(**params):
     cs = ConfigurationSpace()
     epsilon = UniformFloatHyperparameter("epsilon", 0.2, 1, default_value=0.6)                # initial epsilon
     epsilon_decay = UniformFloatHyperparameter("epsilon_decay", 0.2, 1, default_value=0.995)  # decay rate
-    batch_size = UniformIntegerHyperparameter("batch_size", 5, 1000, default_value=128)
-    lr = UniformFloatHyperparameter("lr", 2e-5, 8e-3, default_value=5e-4)
+    # batch_size = UniformIntegerHyperparameter("batch_size", 5, 300, default_value=128)
+    # lr = UniformFloatHyperparameter("lr", 2e-5, 8e-3, default_value=5e-4)
     units_shared_layer1 = UniformIntegerHyperparameter("units_layer1", 8, 256, default_value=64)
     units_shared_layer2 = UniformIntegerHyperparameter("units_layer2", 1, 256, default_value=64)
     units_policy_layer = UniformIntegerHyperparameter("units_layer3", 1, 256, default_value=64)
-    gamma = UniformFloatHyperparameter("gamma", 0.7, 0.99, default_value=0.90)
-    cs.add_hyperparameters([lr, units_shared_layer1, units_shared_layer2, units_policy_layer,
-                            gamma, epsilon, epsilon_decay, batch_size])
+    # gamma = UniformFloatHyperparameter("gamma", 0.7, 0.99, default_value=0.90)
+    cs.add_hyperparameters([units_shared_layer1, units_shared_layer2, units_policy_layer,
+                            epsilon, epsilon_decay])  # lr, batch_size, gamma,
 
     # Create scenario object
     logger.info('##############################################')
@@ -162,10 +181,17 @@ def dqn_smac_wrapper(**params):
 
     return optimized_cfg
 
-if __name__ == '__main__':
-    args = arg_parser()
+def main():
+    args = dqn_arg_parser()
+    # print("rhs: " + str(args.run_parallel))
+    _ = dqn_smac_wrapper(**args.__dict__)
 
-    logdir = os.path.join(args.logdir, str(datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")))
-    os.makedirs(logdir)
-    args.logdir = logdir
-    optimized_cfg = dqn_smac_wrapper(**args.__dict__)
+if __name__ == '__main__':
+    main()
+
+    # args = arg_parser()
+    #
+    # logdir = os.path.join(args.logdir, str(datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")))
+    # os.makedirs(logdir)
+    # args.logdir = logdir
+    # optimized_cfg = dqn_smac_wrapper(**args.__dict__)

@@ -1,17 +1,21 @@
 from run_ple_utils import make_ple_env
-from DQN_PLE import DQNAgent
+# from DQN_PLE import DQNAgent
 import tensorflow as tf
 import os, glob
+import csv
 import numpy as np
 import logging
+# import datetime
 
 from utils_OAI import set_global_seeds, normalize_obs
 
 def eval_model(render, nepisodes, **params):
     logger = logging.getLogger(__name__)
     logger.info('Evaluating learning algorithm...')
+    logger.info(params["eval_model"])
 
     logger.debug('Make Environment with seed %s' % params["seed"])
+    # TODO make non-clipped env, even if agent is trained on clipped env
     ple_env = make_ple_env(params["env"], seed=params["seed"])  # , allow_early_resets=True)
 
     tf.reset_default_graph()
@@ -20,13 +24,18 @@ def eval_model(render, nepisodes, **params):
 
     if params["eval_model"] == 'final':
         f = glob.glob(os.path.join(params["logdir"], 'final_model-*.meta'))
-        idx = f.find('run')
-        f_name = f[idx + 6:-5]
+        idx = f.find('final_model')
+        f_name = f[idx:-5]
         model_idx.append(f_name)
         with tf.Session() as sess:
             OBS, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name)
-            avg_performances, var_performances, maximal_returns = \
-                run_episodes(sess, ple_env, nepisodes, render, params["epsilon"], OBS, PRED_Q)
+            model_performance = \
+                run_episodes(sess, ple_env, nepisodes, 1000, render, params["epsilon"], OBS, PRED_Q)  # TODO 1000
+
+            # Add model performance metrics
+            avg_performances = np.mean(model_performance)
+            var_performances = np.var(model_performance)
+            maximal_returns = np.max(model_performance)
 
         tf.reset_default_graph()
 
@@ -35,22 +44,66 @@ def eval_model(render, nepisodes, **params):
         avg_performances = []
         var_performances = []
         maximal_returns = []
-        for f in glob.glob(os.path.join(params["logdir"], '*.meta')):
+        iii = 0
+        logger.info(params["logdir"])
+        for f in glob.glob(os.path.join(params["logdir"], '*inter*.meta')):
             logger.info('Restore model: %s' % f)
-            idx = f.find('run')
-            f_name = f[idx+6:-5]
+            idx = f.find('_model')
+            f_name = f[idx-5:-5]
             model_idx.append(f_name)
             with tf.Session() as sess:
                 OBS, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name)
                 logger.info('Run %s evaluation episodes' % nepisodes)
-                avg_model_performance, var_model_performance, maximal_model_return = \
-                    run_episodes(sess, ple_env, nepisodes, render, params["epsilon"], OBS, PRED_Q)
+                model_performance = \
+                    run_episodes(sess, ple_env, nepisodes, 1000, render, params["epsilon"], OBS, PRED_Q)  # TODO 1000
 
                 # Add model performance metrics
-                avg_performances.append(avg_model_performance)
-                var_performances.append(var_model_performance)
-                maximal_returns.append(maximal_model_return)
+                avg_performances.append(np.mean(model_performance))
+                var_performances.append(np.var(model_performance))
+                maximal_returns.append(np.max(model_performance))
             tf.reset_default_graph()
+    elif params["eval_model"] == "config":
+        # Use all stored maximum performance models and the final model.
+        avg_performances = []
+        var_performances = []
+        maximal_returns = []
+
+        # Setup log csv file
+        fieldnames = ['model']
+        for i in range(nepisodes):
+            fieldnames.append(('eps' + str(i)))
+        path = os.path.join(params["logdir"], 'results.csv')
+        with open(path, "w") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(fieldnames)
+
+        # Run evaluation episodes
+        models = glob.glob(os.path.join(params["logdir"], '*config_model*.meta'))
+        models.sort()
+        for f in models:
+            logger.info('Restore model: %s' % f)
+            idx = f.find('config_model')
+            f_name = f[idx:-5]
+            model_idx.append(f_name)
+            with tf.Session() as sess:
+                OBS, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name)
+                logger.info('Run %s evaluation episodes' % nepisodes)
+                model_performance = \
+                    run_episodes(sess, ple_env, nepisodes, 2000, render, params["epsilon"], OBS, PRED_Q)  # TODO 1000
+
+                # Add model performance metrics
+                avg_performances.append(np.mean(model_performance))
+                var_performances.append(np.var(model_performance))
+                maximal_returns.append(np.max(model_performance))
+            tf.reset_default_graph()
+
+            # Save episode information in csv file for further analysis.
+            # Each row contains nepisodes episodes using the current model "f_name".
+            with open(path, "a") as csvfile:  # TODO add real returns
+                writer = csv.writer(csvfile)
+                model_performance = [str(p) for p in model_performance]
+                model_performance.insert(0, f_name)
+                writer.writerow(model_performance)
 
     logger.info('Results of the evaluation of the learning algorithm:')
     logger.info('Restored models: %s' % model_idx)
@@ -59,7 +112,10 @@ def eval_model(render, nepisodes, **params):
     logger.info('Maximum episode return per model: %s' % maximal_returns)
     ple_env.close()
 
-    return np.mean(avg_performances), np.mean(var_performances), np.mean(maximal_returns)
+    if len(avg_performances) > 0:
+        return np.mean(avg_performances), np.mean(var_performances), np.mean(maximal_returns)
+    else:
+        return -5, 0, -5
 
 def restore_dqn_model(sess, logdir, f_name):
     sess.run(tf.global_variables_initializer())
@@ -76,11 +132,12 @@ def restore_dqn_model(sess, logdir, f_name):
     predQ_out = tf.get_collection('predQ')      # get predicted Q values
     return obs_in, predQ_out
 
-def run_episodes(sess, env, n_eps, render, epsilon, obs_in, predQ_out):
+
+def run_episodes(sess, env, n_eps, n_pipes, render, epsilon, obs_in, predQ_out):
     logger = logging.getLogger(__name__)
     ep_length = []
     ep_return = []
-
+    logger.info('---------------- Episode results -----------------------')
     for i in range(0, n_eps):  # TODO parallelize this here!
         obs = env.reset()
         obs = normalize_obs(obs)
@@ -88,9 +145,9 @@ def run_episodes(sess, env, n_eps, render, epsilon, obs_in, predQ_out):
         total_return = 0
         total_length = 0
 
-        while not done:
+        while not done and (total_return < n_pipes):
             pQ = sess.run([predQ_out], feed_dict={obs_in[0]: [obs]})
-            best_ac = np.argmax(pQ)  # greedy policy not, epsilon greedy policy
+            best_ac = np.argmax(pQ)  # greedy policy not epsilon greedy policy
             obs, reward, done, _ = env.step(best_ac)
             # obs, reward, done, _ = env.step(act[0][0])
             obs = normalize_obs(obs)
@@ -100,16 +157,15 @@ def run_episodes(sess, env, n_eps, render, epsilon, obs_in, predQ_out):
 
             total_length += 1
             total_return += reward
-        logger.debug('*****************************************')
-        logger.debug('Episode %s: %s, %s' % (i, total_return, total_length))
+        logger.info('Episode %s: %s, %s' % (i, total_return, total_length))
         ep_length.append(total_length)
         ep_return.append(total_return)
 
-    return np.mean(ep_return), np.var(ep_return), np.max(ep_return)
+    return ep_return
 
 
 if __name__ == '__main__':
-    logdir = "/home/mara/Desktop/logs/DQN/2018-06-12-16-32-47/run1/"
+    logdir = "/home/mara/Desktop/logs/DQN/13579/dqn_output"
 
     logger = logging.getLogger()
     ch = logging.StreamHandler()  # Handler which writes to stderr (in red)
@@ -138,7 +194,8 @@ if __name__ == '__main__':
                 params[p_name] = float(p_val)
             except Exception:
                 params[p_name] = p_val[1:-1]
-    params["eval_model"] = 'all'
+    params["eval_model"] = 'config'
+    params["logdir"] = logdir
 
     # evaluate model
-    avg_perf, var_perf, max_return = eval_model(render=False, nepisodes=100, **params)
+    avg_perf, var_perf, max_return = eval_model(render=False, nepisodes=4, **params)
