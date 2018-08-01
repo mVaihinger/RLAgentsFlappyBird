@@ -6,6 +6,7 @@ sys.path.append(os.path.dirname(sys.path[0]))
 from run_ple_utils import make_ple_env, arg_parser, params_parser
 from DQN.eval_dqn_model import eval_model
 from DQN.DQN_PLE import q_learning
+from models_OAI import DQN_smac, DRQN
 
 import logging
 import datetime, os
@@ -13,6 +14,7 @@ import datetime, os
 
 def dqn_params_parser(**kwargs):
     param_dict = params_parser()
+    param_dict.add_cat_param("architecture", options=['dqn', 'lstm', 'gru'], default='dqn', dtype=str)
     param_dict.add_num_param("gamma", lb=0.01, ub=1., default=0.90, dtype=float)
     param_dict.add_num_param("epsilon", lb=0.01, ub=1., default=0.50, dtype=float)
     param_dict.add_num_param("epsilon_decay", lb=0.01, ub=1., default=0.995, dtype=float)
@@ -20,6 +22,7 @@ def dqn_params_parser(**kwargs):
     param_dict.add_num_param("lr", lb=1e-12, ub=1., default=5e-4, dtype=float)
     param_dict.add_cat_param("lrschedule", options=['constant', 'linear', 'double_linear_con'], default='constant', dtype=str)
     param_dict.add_num_param("batch_size", lb=1, ub=2000, default=128, dtype=int)
+    param_dict.add_num_param("trace_length", lb=1, ub=100, default=8, dtype=int)
     param_dict.add_num_param("buffer_size", lb=1, ub=1e6, default=int(4000), dtype=int)
     param_dict.add_num_param("max_grad_norm", lb=0.001, ub=20, default=0.01, dtype=float)
     param_dict.add_num_param("units_layer1", lb=1, ub=700, default=64, dtype=int)
@@ -53,9 +56,18 @@ def run_dqn_smac(**kwargs):
     # paramDict.add_cat_param("eval_model", options=['all', 'final'], default='all', dtype=str)
     # params = paramDict.check_params(**kwargs)
 
+    assert (params["buffer_size"] < params["batch_size"]), 'Batch size needs to be smaller than Buffer size!'
+
     seed = params["seed"]
     ple_env = make_ple_env(params["env"], seed=seed)
     test_env = make_ple_env(params["test_env"], seed=seed)
+
+    if params["architecture"] == 'dqn':
+        q_network = DQN_smac
+    elif params["architecture"] == 'lstm':
+        q_network = DRQN
+    elif params["architecture"] == 'gru':
+        q_network = DRQN
 
     with open(os.path.join(params["logdir"], 'hyperparams.txt'), 'a') as f:
         for k, v in params.items():
@@ -63,7 +75,8 @@ def run_dqn_smac(**kwargs):
 
     print(params)
 
-    q_learning(ple_env,
+    q_learning(q_network=q_network,
+               env=ple_env,
                test_env=test_env,
                seed=seed,
                total_timesteps=params["total_timesteps"],
@@ -73,8 +86,9 @@ def run_dqn_smac(**kwargs):
                tau=params["tau"],
                lr=params["lr"],
                lrschedule=params["lrschedule"],
-               max_replay_buffer_size=params["buffer_size"],
+               buffer_size=params["buffer_size"],
                batch_size=params["batch_size"],
+               trace_length=params["trace_length"],
                max_grad_norm=params["max_grad_norm"],
                units_per_hlayer=(params["units_layer1"],
                                  params["units_layer2"],
@@ -102,15 +116,16 @@ def run_dqn_smac(**kwargs):
 def main():
     parser = arg_parser()
     # parser = arg_parser()
+    parser.add_argument('--architecture', help='Deep Q network Architecture', choices=['dqn', 'lstm', 'gru'], type=str, default='dqn')
     parser.add_argument('--gamma', help='Discount factor for discounting the reward', type=float, default=0.90)
     parser.add_argument('--epsilon', help='Epsilon for epsilon-greedy policy', type=float, default=0.5)
     parser.add_argument('--epsilon_decay', help='Epsilon decay rate', type=float, default=0.995)
     parser.add_argument('--tau', help='Update rate of target netowrk', type=float, default=0.99)
     parser.add_argument('--lr', help='Learning Rate', type=float, default=5e-4)
     parser.add_argument('--lrschedule', help='Learning Rate Decay Schedule', choices=['constant', 'linear', 'double_linear_con'], default='constant')
-    parser.add_argument('--batch_size', help='Batch size. Number of sampless drawn from buffer, which are used to update the model.',
-                        type=int, default=50)
     parser.add_argument('--buffer_size', help='Replay buffer size', type=float, default=4000)
+    parser.add_argument('--batch_size', help='Batch size. Number of samples drawn from buffer, which are used to update the model.', type=int, default=50)
+    parser.add_argument('--trace_length', help='Length of the traces obtained from the batched episodes', type=int, default=1)
     parser.add_argument('--max_grad_norm', help='Maximum gradient norm up to which gradient is not clipped', type=float, default=0.01)
     parser.add_argument('--units_layer1', help='Units in first hidden layer', type=int, default=64)
     parser.add_argument('--units_layer2', help='Units in second hidden layer', type=int, default=64)
@@ -122,9 +137,19 @@ def main():
     # parser.add_argument('--logdir', help='directory where logs are stored', default='/home/mara/Desktop/logs/A2C_OAI_NENVS')  # '/mnt/logs/A2C')
     args = parser.parse_args()
 
+    assert (args.buffer_size < args.batch_size), 'Batch size needs to be smaller than Buffer size!'
+
     seed = args.seed
     env = make_ple_env(args.env, seed=seed)
     test_env = make_ple_env(args.test_env, seed=seed)
+
+    if args.architecture == 'dqn':
+        q_network = DQN_smac
+        args.trace_length = 1
+    elif args.architecture == 'lstm':
+        q_network = DRQN
+    elif args.architecture == 'gru':
+        q_network = DRQN
 
     # logdir = os.path.join(args.logdir, str(datetime.datetime.today()))
     # os.makedirs(logdir)
@@ -146,7 +171,8 @@ def main():
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-    q_learning(env,
+    q_learning(q_network=q_network,
+               env=env,
                test_env=test_env,
                seed=seed,
                total_timesteps=args.total_timesteps,
@@ -156,7 +182,9 @@ def main():
                tau=args.tau,
                lr=args.lr,
                lrschedule=args.lrschedule,
-               max_replay_buffer_size=args.buffer_size,
+               buffer_size=args.buffer_size,
+               batch_size=args.batch_size,
+               trace_length=args.trace_length,
                max_grad_norm=args.max_grad_norm,
                units_per_hlayer=(args.units_layer1,
                                  args.units_layer2,

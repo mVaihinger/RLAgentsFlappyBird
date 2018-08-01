@@ -10,9 +10,10 @@ from utils_OAI import set_global_seeds, normalize_obs
 
 def eval_model(render, nepisodes, **params):
     logger = logging.getLogger(__name__)
-    logger.info('Evaluating learning algorithm...')
+    logger.info('Evaluating learning algorithm...\n')
+    logger.info(params["eval_model"])
 
-    logger.debug('Make Environment with seed %s' % params["seed"])
+    logger.debug('\nMake Environment with seed %s' % params["seed"])
     ple_env = make_ple_env(params["env"], seed=params["seed"]) # TODO use different seed for every run!#, allow_early_resets=True)
 
     tf.reset_default_graph()

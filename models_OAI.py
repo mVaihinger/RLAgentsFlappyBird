@@ -524,12 +524,12 @@ class DQN():
 
         prefix = "target_" if (scope == "target") else ""
 
-        self.obs_in = tf.placeholder(shape=[None, nd], dtype=tf.float32,
+        X = tf.placeholder(shape=[None, nd], dtype=tf.float32,
                                      name=prefix + "Ob")  # observations
 
         # Network Architecture
         with tf.variable_scope(scope, reuse=tf.AUTO_REUSE): # leads to error when assigning weights to target network
-            h1 = tf.nn.elu(fc(self.obs_in, 'dqn_h1', nh=units_per_hlayer[0]))
+            h1 = tf.nn.elu(fc(X, 'dqn_h1', nh=units_per_hlayer[0]))
             h2 = tf.nn.tanh(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
             h3 = tf.nn.elu(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
             # h1 = tf.layers.dense(self.obs_in,
@@ -561,11 +561,12 @@ class DQN():
             Return:
                 The prediction of the output tensor. [batch_size, n_valid_actions]
             """
-            return sess.run(self.predQ, feed_dict={self.obs_in: obs})
+            return sess.run(self.predQ, feed_dict={X: obs})
 
         def step(obs):
-            return sess.run(a0, feed_dict={self.obs_in: obs})
+            return sess.run(a0, feed_dict={X: obs})
 
+        self.X = X
         self.predict = predict
         self.step = step
 
@@ -578,20 +579,20 @@ class DRQN():
         nd, = ob_space.shape
         nflat_batch = nbatch * trace_length
         ob_shape = [nflat_batch, nd]
-        self.obs_in = tf.placeholder(shape=ob_shape, dtype=tf.float32,
+        X = tf.placeholder(shape=ob_shape, dtype=tf.float32,
                                      name=scope + "_obs")  # observations
         # Network Architecture
         with tf.variable_scope(scope, reuse=reuse):  # leads to error when assigning weights to target network
             if activ_fcn == 'relu6':
-                h1 = tf.nn.relu6(fc(self.obs_in, 'dqn_h1', nh=units_per_hlayer[0]))
+                h1 = tf.nn.relu6(fc(X, 'dqn_h1', nh=units_per_hlayer[0]))
                 h2 = tf.nn.relu6(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
                 h3 = tf.nn.relu6(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
             elif activ_fcn == 'elu':
-                h1 = tf.nn.elu(fc(self.obs_in, 'dqn_h1', nh=units_per_hlayer[0]))
+                h1 = tf.nn.elu(fc(X, 'dqn_h1', nh=units_per_hlayer[0]))
                 h2 = tf.nn.elu(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
                 h3 = tf.nn.elu(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
             elif activ_fcn == 'mixed':
-                h1 = tf.nn.elu(fc(self.obs_in, 'dqn_h1', nh=units_per_hlayer[0]))
+                h1 = tf.nn.elu(fc(X, 'dqn_h1', nh=units_per_hlayer[0]))
                 h2 = tf.nn.tanh(fc(h1, 'dqn_h2', nh=units_per_hlayer[1]))
                 h3 = tf.nn.elu(fc(h2, 'dqn_h3', nh=units_per_hlayer[2]))
             # The output matrix [nbatch x trace_length, h_units] of layer 3 needs to be reshaped to a vector with
@@ -623,14 +624,16 @@ class DRQN():
             Return:
                 The prediction of the output tensor. [batch_size, n_valid_actions]
             """
-            return sess.run([self.predQ, rnn_state_out], feed_dict={self.obs_in: obs, rnn_state_in: rnn_state})
+            return sess.run([self.predQ, rnn_state_out], feed_dict={X: obs, rnn_state_in: rnn_state})
 
         def step(obs_in, rnn_state):
-            return sess.run([a0, rnn_state_out], feed_dict={self.obs_in: obs_in, rnn_state_in: rnn_state})
+            return sess.run([a0, rnn_state_out], feed_dict={X: obs_in, rnn_state_in: rnn_state})
 
         def state(obs, rnn_state):
-            return sess.run(rnn_state_out, feed_dict={self.obs_in: obs, rnn_state_in: rnn_state})
+            return sess.run(rnn_state_out, feed_dict={X: obs, rnn_state_in: rnn_state})
 
+        self.initial_state = (np.zeros([nbatch, units_per_hlayer[2]]), np.zeros([nbatch, units_per_hlayer[2]]))
+        self.X = X
         self.rnn_state_in = rnn_state_in
         self.rnn_state_out = rnn_state_out
         self.predict = predict
@@ -643,13 +646,12 @@ class DQN_smac():
     Deep Q Network class based on TensorFlow.
     """
 
-    def __init__(self, sess, ob_space, nact, nbatch, units_per_hlayer, scope=None, reuse=False, activ_fcn='relu6'):
+    def __init__(self, sess, ob_space, nact, nbatch, trace_length, units_per_hlayer, scope=None, reuse=False, activ_fcn='relu6'):
         nd, = ob_space.shape
         prefix = "target_" if (scope == "target") else ""
 
         X = tf.placeholder(shape=(nbatch, nd), dtype=tf.float32,
                            name=prefix + "Ob")  # observations
-
         # Network Architecture
         with tf.variable_scope(scope, reuse=reuse):  # leads to error when assigning weights to target network
             if activ_fcn == 'relu6':
@@ -671,7 +673,7 @@ class DQN_smac():
         a0 = tf.arg_max(predQ, dimension=1)
 
         def step(obs, *_args, **_kwargs):
-            return sess.run(a0, feed_dict={X: obs})
+            return sess.run(a0, feed_dict={X: obs}), None
 
         def predict(obs, *_args, **_kwargs):
             """
@@ -681,7 +683,7 @@ class DQN_smac():
             Return:
                 The prediction of the output tensor. [batch_size, n_valid_actions]
             """
-            return sess.run(predQ, feed_dict={X: obs})
+            return sess.run(predQ, feed_dict={X: obs}), None
 
         # def step(obs, epsilon, *_args, **_kwargs):  # epsilon greedy policy
         #     QP = sess.run(predQ, feed_dict={X: obs})
@@ -689,7 +691,7 @@ class DQN_smac():
         #     AP = np.ones(nact, dtype=float) * epsilon / nact
         #     AP[best_ac] += (1.0 - epsilon)
         #     return AP
-
+        self.initial_state = None
         self.X = X
         # self.ac = a0
         self.predQ = predQ

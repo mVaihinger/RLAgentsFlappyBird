@@ -1,5 +1,3 @@
-from run_ple_utils import make_ple_env
-# from DQN_PLE import DQNAgent
 import tensorflow as tf
 import os, glob
 import csv
@@ -7,14 +5,16 @@ import numpy as np
 import logging
 # import datetime
 
-from utils_OAI import set_global_seeds, normalize_obs
+from utils_OAI import set_global_seeds, normalize_obs, get_collection_rnn_state
+from run_ple_utils import make_ple_env
+
 
 def eval_model(render, nepisodes, **params):
     logger = logging.getLogger(__name__)
-    logger.info('Evaluating learning algorithm...')
+    logger.info('Evaluating learning algorithm...\n')
     logger.info(params["eval_model"])
 
-    logger.debug('Make Environment with seed %s' % params["seed"])
+    logger.debug('\nMake Environment with seed %s' % params["seed"])
     # TODO make non-clipped env, even if agent is trained on clipped env
     ple_env = make_ple_env(params["env"], seed=params["seed"])  # , allow_early_resets=True)
 
@@ -22,15 +22,17 @@ def eval_model(render, nepisodes, **params):
     set_global_seeds(params["seed"])
     model_idx = []
 
+    recurrent = (params["architecture"] == 'lstm' or params["architecture"] == 'gru')
+
     if params["eval_model"] == 'final':
         f = glob.glob(os.path.join(params["logdir"], 'final_model-*.meta'))
         idx = f.find('final_model')
         f_name = f[idx:-5]
         model_idx.append(f_name)
         with tf.Session() as sess:
-            OBS, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name)
-            model_performance = \
-                run_episodes(sess, ple_env, nepisodes, 1000, render, params["epsilon"], OBS, PRED_Q)  # TODO 1000
+            OBS, RNN_S_IN, RNN_S_OUT, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name, isrnn=recurrent)
+            model_performance = run_episodes(sess, ple_env, nepisodes, 1000, render,
+                                             params["epsilon"], OBS, RNN_S_IN, RNN_S_OUT, PRED_Q)
 
             # Add model performance metrics
             avg_performances = np.mean(model_performance)
@@ -45,14 +47,13 @@ def eval_model(render, nepisodes, **params):
         var_performances = []
         maximal_returns = []
         iii = 0
-        logger.info(params["logdir"])
         for f in glob.glob(os.path.join(params["logdir"], '*inter*.meta')):
             logger.info('Restore model: %s' % f)
             idx = f.find('_model')
             f_name = f[idx-5:-5]
             model_idx.append(f_name)
             with tf.Session() as sess:
-                OBS, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name)
+                OBS, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name, isrnn=recurrent)
                 logger.info('Run %s evaluation episodes' % nepisodes)
                 model_performance = \
                     run_episodes(sess, ple_env, nepisodes, 1000, render, params["epsilon"], OBS, PRED_Q)  # TODO 1000
@@ -86,10 +87,10 @@ def eval_model(render, nepisodes, **params):
             f_name = f[idx:-5]
             model_idx.append(f_name)
             with tf.Session() as sess:
-                OBS, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name)
+                OBS, RNN_S_IN, RNN_S_OUT, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name, isrnn=recurrent)
                 logger.info('Run %s evaluation episodes' % nepisodes)
-                model_performance = \
-                    run_episodes(sess, ple_env, nepisodes, 2000, render, params["epsilon"], OBS, PRED_Q)  # TODO 1000
+                model_performance = run_episodes(sess, ple_env, nepisodes, 2000, render,
+                                                 params["epsilon"], OBS, RNN_S_IN, RNN_S_OUT, PRED_Q)  # TODO 1000
 
                 # Add model performance metrics
                 avg_performances.append(np.mean(model_performance))
@@ -105,6 +106,7 @@ def eval_model(render, nepisodes, **params):
                 model_performance.insert(0, f_name)
                 writer.writerow(model_performance)
 
+    logger.info(params["logdir"])
     logger.info('Results of the evaluation of the learning algorithm:')
     logger.info('Restored models: %s' % model_idx)
     logger.info('Average performance per model: %s' % avg_performances)
@@ -117,7 +119,7 @@ def eval_model(render, nepisodes, **params):
     else:
         return -5, 0, -5
 
-def restore_dqn_model(sess, logdir, f_name):
+def restore_dqn_model(sess, logdir, f_name, isrnn):
     sess.run(tf.global_variables_initializer())
     sess.run(tf.local_variables_initializer())
     g = tf.get_default_graph()
@@ -130,10 +132,15 @@ def restore_dqn_model(sess, logdir, f_name):
     # Load operations from collections
     obs_in = tf.get_collection('inputs')        # network inputs: observations
     predQ_out = tf.get_collection('predQ')      # get predicted Q values
-    return obs_in, predQ_out
+    if isrnn:
+        rnn_state_in = get_collection_rnn_state('state_in')  # rnn cell input vector
+        rnn_state_out = get_collection_rnn_state('state_out')  # rnn cell output vector
+    else:
+        rnn_state_in, rnn_state_out = None, None
+    return obs_in, rnn_state_in, rnn_state_out, predQ_out
 
 
-def run_episodes(sess, env, n_eps, n_pipes, render, epsilon, obs_in, predQ_out):
+def run_episodes(sess, env, n_eps, n_pipes, render, epsilon, obs_in, rnn_state_in, rnn_state_out, predQ_out):
     logger = logging.getLogger(__name__)
     ep_length = []
     ep_return = []
@@ -142,11 +149,16 @@ def run_episodes(sess, env, n_eps, n_pipes, render, epsilon, obs_in, predQ_out):
         obs = env.reset()
         obs = normalize_obs(obs)
         done = False
+        if rnn_state_in is not None:
+            rnn_s_in = (np.zeros(rnn_state_in[0].shape), np.zeros(rnn_state_in[1].shape))  # init rnn cell vector
         total_return = 0
         total_length = 0
 
         while not done and (total_return < n_pipes):
-            pQ = sess.run([predQ_out], feed_dict={obs_in[0]: [obs]})
+            if rnn_state_in is not None:
+                pQ, rnn_s_out = sess.run([predQ_out, rnn_state_out], feed_dict={obs_in[0]: [obs], rnn_state_in: rnn_s_in})
+            else:
+                pQ = sess.run([predQ_out], feed_dict={obs_in[0]: [obs]})
             best_ac = np.argmax(pQ)  # greedy policy not epsilon greedy policy
             obs, reward, done, _ = env.step(best_ac)
             # obs, reward, done, _ = env.step(act[0][0])
@@ -157,6 +169,8 @@ def run_episodes(sess, env, n_eps, n_pipes, render, epsilon, obs_in, predQ_out):
 
             total_length += 1
             total_return += reward
+            if rnn_state_in is not None:
+                rnn_s_in = rnn_s_out
         logger.info('Episode %s: %s, %s' % (i, total_return, total_length))
         ep_length.append(total_length)
         ep_return.append(total_return)

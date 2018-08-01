@@ -519,8 +519,55 @@ class ReplayBuffer:
         batch_dones = np.concatenate((batch_dones, self._data.dones[buffer_length-n_batched:]))
 
         # batch_states = np.array([self._data.states[i] for i in batch_indices]).squeeze()
-
         return batch_obs, batch_actions, batch_next_obs, batch_rewards, batch_values, batch_dones  #, batch_states
+
+
+    def recent_and_next_batch_of_seq(self, batch_size, trace_length):
+        # Draw batch_sze/2 random samples
+        n_batched = batch_size-1
+        # batch_indices = np.random.choice(len(self._data.obs), n_batched)  # TODO len - trace_length prioritized experience replay
+        # batch_obs = np.array([np.array(self._data.obs[i:i+trace_length]) for i in batch_indices])
+        # batch_actions = np.array([self._data.actions[i:i+trace_length] for i in batch_indices])
+        # batch_next_obs = np.array([self._data.next_obs[i:i+trace_length] for i in batch_indices])
+        # batch_rewards = np.array([self._data.rewards[i:i+trace_length] for i in batch_indices])
+        # batch_values = np.array([self._data.values[i:i+trace_length] for i in batch_indices])
+        # batch_dones = np.array([self._data.dones[i:i+trace_length] for i in batch_indices])
+        # # Take batch_size/2 recent samples and add them to mini batch
+        # buffer_length = self.size()
+        # batch_obs = np.concatenate((batch_obs, [self._data.obs[buffer_length - trace_length:]]))
+        # batch_actions = np.concatenate((batch_actions, [self._data.actions[buffer_length - trace_length:]]))
+        # batch_next_obs = np.concatenate((batch_next_obs, [self._data.next_obs[buffer_length - trace_length:]]))
+        # batch_rewards = np.concatenate((batch_rewards, [self._data.rewards[buffer_length - trace_length:]]))
+        # batch_values = np.concatenate((batch_values, [self._data.values[buffer_length - trace_length:]]))
+        # batch_dones = np.concatenate((batch_dones, [self._data.dones[buffer_length - trace_length:]]))
+
+        batch_indices = np.random.choice(len(self._data.obs) - trace_length, n_batched)  # TODO len - trace_length prioritized experience replay
+        batch_obs =[self._data.obs[i:i + trace_length] for i in batch_indices]
+        batch_actions = [self._data.actions[i:i + trace_length] for i in batch_indices]
+        batch_next_obs = [self._data.next_obs[i:i + trace_length] for i in batch_indices]
+        batch_rewards = [self._data.rewards[i:i + trace_length] for i in batch_indices]
+        batch_values = [self._data.values[i:i + trace_length] for i in batch_indices]
+        batch_dones = [self._data.dones[i:i + trace_length] for i in batch_indices]
+
+        # Take batch_size/2 recent samples and add them to mini batch
+        buffer_length = self.size()
+        batch_obs.append(self._data.obs[buffer_length - trace_length:])
+        batch_actions.append(self._data.actions[buffer_length - trace_length:])
+        batch_next_obs.append(self._data.next_obs[buffer_length - trace_length:])
+        batch_rewards.append(self._data.rewards[buffer_length - trace_length:])
+        batch_values.append(self._data.values[buffer_length - trace_length:])
+        batch_dones.append(self._data.dones[buffer_length - trace_length:])
+
+        batch_obs = np.reshape(np.array(batch_obs), newshape=[batch_size * trace_length, -1])
+        batch_actions = np.reshape(np.array(batch_actions), newshape=[batch_size * trace_length])
+        batch_next_obs = np.reshape(np.array(batch_next_obs), newshape=[batch_size * trace_length, -1])
+        batch_rewards = np.reshape(np.array(batch_rewards), newshape=[batch_size * trace_length])
+        batch_values = np.reshape(np.array(batch_values), newshape=[batch_size * trace_length])
+        batch_dones = np.reshape(np.array(batch_dones), newshape=[batch_size * trace_length])
+
+        # batch_states = np.array([self._data.states[i] for i in batch_indices]).squeeze()
+        return batch_obs, batch_actions, batch_next_obs, batch_rewards, batch_values, batch_dones  #, batch_states
+
 
     # def recent_and_next_seq_batch(selfself, batch_size, trace_length):
     #

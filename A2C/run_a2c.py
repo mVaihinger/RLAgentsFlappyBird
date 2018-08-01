@@ -151,7 +151,7 @@ def main():
 
     # args.total_timesteps = 50000
     # args.show_interval = 2
-    args.env = 'FlappyBird-v3' # TODO!!
+    # args.env = 'FlappyBird-v3' # TODO!!
     seed = args.seed
     # print(args.env, args.nenvs)
     env = make_ple_envs(args.env, num_env=args.nenvs, seed=seed)

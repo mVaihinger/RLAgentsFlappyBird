@@ -104,7 +104,7 @@ class DRQNAgent():
             tf.summary.histogram("others/QT", QT)
             self.summary_step = tf.summary.merge_all()
 
-        tf.add_to_collection('inputs', eval_model.obs_in)
+        tf.add_to_collection('inputs', eval_model.X)
         add_to_collection_rnn_state('state_in', eval_model.rnn_state_in)
         add_to_collection_rnn_state('state_out', eval_model.rnn_state_out)
         tf.add_to_collection('predQ', eval_model.predQ)
@@ -124,7 +124,7 @@ class DRQNAgent():
                 actions: [current_action] or actions of batch
                 targets: [current_target] or targets of batch
             """
-            feed_dict = {train_model.obs_in: obs, A: actions, QT: targets, train_model.rnn_state_in: rnn_states}
+            feed_dict = {train_model.X: obs, A: actions, QT: targets, train_model.rnn_state_in: rnn_states}
             # evaluate the TF tensors and operations self.loss and self.train_step
             total_loss, _, global_step = sess.run([loss, _train, self.global_step], feed_dict=feed_dict)
             if log_interval > 0 and (self.num_steps_trained % self.log_interval == 0):
@@ -186,7 +186,7 @@ class DRQNAgent():
                 total_length = 0
 
                 while not done and (total_return < n_pipes):
-                    pQ, rnn_s_out = sess.run([eval_model.predQ, eval_model.rnn_state_out], feed_dict={eval_model.obs_in: [obs], eval_model.rnn_state_in: rnn_s_in})
+                    pQ, rnn_s_out = sess.run([eval_model.predQ, eval_model.rnn_state_out], feed_dict={eval_model.X: [obs], eval_model.rnn_state_in: rnn_s_in})
                     ac = np.argmax(pQ)
                     obs, reward, done, _ = env.step(ac)
                     # obs, reward, done, _ = env.step(act[0][0])
@@ -420,10 +420,7 @@ def q_learning(env, test_env, seed, total_timesteps=int(1e8), gamma=0.95, epsilo
             if i_sample % update_interval == 0:
                 # TODO update epsilon
 
-                # update target
-                # start_time = datetime.time()
                 agent.update_target(agent.target_ops)
-                # logger.info('Update Target duration: %s - %s' % (start_time, datetime.time()))
 
                 # reset rnn state (history knowledge) before every training step
                 rnn_state_train = (np.zeros([nbatch, units_per_hlayer[2]]), np.zeros([nbatch, units_per_hlayer[2]]))

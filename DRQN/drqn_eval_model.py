@@ -3,7 +3,7 @@ import os, glob
 import csv
 import numpy as np
 import logging
-import datetime
+#import datetime
 
 from utils_OAI import set_global_seeds, normalize_obs, get_collection_rnn_state
 from run_ple_utils import make_ple_env
@@ -11,9 +11,10 @@ from run_ple_utils import make_ple_env
 
 def eval_model(render, nepisodes, **params):
     logger = logging.getLogger(__name__)
-    logger.info('Evaluating learning algorithm...')
+    logger.info('Evaluating learning algorithm...\n')
+    logger.info(params["eval_model"])
 
-    logger.debug('Make Environment with seed %s' % params["seed"])
+    logger.debug('\nMake Environment with seed %s' % params["seed"])
     # TODO make non-clipped env, even if agent is trained on clipped env
     ple_env = make_ple_env(params["env"], seed=params["seed"])  # , allow_early_resets=True)
 
@@ -103,6 +104,7 @@ def eval_model(render, nepisodes, **params):
                 model_performance.insert(0, f_name)
                 writer.writerow(model_performance)
 
+    logger.info(params["logdir"])
     logger.info('Results of the evaluation of the learning algorithm:')
     logger.info('Restored models: %s' % model_idx)
     logger.info('Average performance per model: %s' % avg_performances)
@@ -115,7 +117,6 @@ def eval_model(render, nepisodes, **params):
     else:
         return -5, 0, -5
 
-
 def restore_drqn_model(sess, logdir, f_name):
     sess.run(tf.global_variables_initializer())
     sess.run(tf.local_variables_initializer())
@@ -127,10 +128,10 @@ def restore_drqn_model(sess, logdir, f_name):
     loader.restore(sess, os.path.join(logdir, f_name))  # restore values of the variables.
 
     # Load operations from collections
-    obs_in = tf.get_collection('inputs')            # network inputs: observations
-    rnn_state_in = get_collection_rnn_state('state_in')    # rnn cell input vector
+    obs_in = tf.get_collection('inputs')        # network inputs: observations
+    predQ_out = tf.get_collection('predQ')      # get predicted Q values
+    rnn_state_in = get_collection_rnn_state('state_in')  # rnn cell input vector
     rnn_state_out = get_collection_rnn_state('state_out')  # rnn cell output vector
-    predQ_out = tf.get_collection('predQ')          # get predicted Q values
     return obs_in, rnn_state_in, rnn_state_out, predQ_out
 
 
