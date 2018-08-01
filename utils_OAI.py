@@ -2,8 +2,11 @@ import os
 import random
 import numpy as np
 import tensorflow as tf
-from collections import deque
+from collections import deque, namedtuple
 import multiprocessing
+import logging
+
+logger = logging.getLogger(__name__)
 
 # def get_next_log_filename(save_path):
 #     if not os.path.exists(save_path):
@@ -26,6 +29,40 @@ def set_global_seeds(i):
     np.random.seed(i)
     random.seed(i)
 
+# From kaufmanu on stackoverflow
+def add_to_collection_rnn_state(name, rnn_state):
+    # store the name of each cell type in a different collection
+    coll_of_names = name + '__names__'
+    for layer in rnn_state:
+        n = layer.__class__.__name__
+        tf.add_to_collection(coll_of_names, n)
+        try:
+            for l in layer:
+                tf.add_to_collection(name, l)
+        except TypeError:
+            # layer is not iterable so just add it directly
+            tf.add_to_collection(name, layer)
+
+
+def get_collection_rnn_state(name):
+    layers = []
+    coll = tf.get_collection(name)
+    coll_of_names = tf.get_collection(name + '__names__')
+    idx = 0
+    for n in coll_of_names:
+        try:
+            if 'LSTMStateTuple' in n:
+                state = tf.nn.rnn_cell.LSTMStateTuple(coll[idx], coll[idx+1])
+                idx += 2
+            else:  # add more cell types here
+                state = coll[idx]
+                idx += 1
+        except TypeError:
+            # else:  # add more cell types here
+            state = coll[idx]
+            idx += 1
+        layers.append(state)
+    return tuple(layers)
 
 def make_session(num_cpu=None, make_default=False):
     """Returns a session that will use <num_cpu> CPU's only"""
@@ -125,12 +162,13 @@ def ortho_init(scale=1.0):
 
 def fc(x, scope, nh, *, init_scale=1.0, init_bias=0.0):
     with tf.variable_scope(scope):
-        nin = x.get_shape()[1].value
+        nin = x.get_shape()[1].value # second dimension of input matrix (length of feature/observation vector)
         val = 0.1
         # init_scale = 0.2
         w = tf.get_variable("w", [nin, nh], initializer=tf.orthogonal_initializer(gain=init_scale))
         # w = tf.get_variable("w", [nin, nh], initializer=tf.glorot_normal_initializer())
         # w = tf.get_variable("w", [nin, nh], initializer=tf.glorot_uniform_initializer())
+        # w = tf.get_variable("w", [nin, nh], initializer=tf.contrib.layers.xavier_initializer)
 
         b = tf.get_variable("b", [nh], initializer=tf.constant_initializer(init_bias))
 
@@ -367,7 +405,62 @@ def q_explained_variance(qpred, q):
     return 1.0 - (varpred / vary)
 
 
-from collections import namedtuple
+# def process_state(state):
+#     return np.array(list(state.values()))  # np.array([ .... ])
+
+
+def explained_variance(ypred,y):
+    """
+    Computes fraction of variance that ypred explains about y.
+    Returns 1 - Var[y-ypred] / Var[y]
+
+    interpretation:
+        ev=0  =>  might as well have predicted zero
+        ev=1  =>  perfect prediction
+        ev<0  =>  worse than just predicting zero
+
+    """
+    assert y.ndim == 1 and ypred.ndim == 1
+    vary = np.var(y)
+    return np.nan if vary==0 else 1 - np.var(y-ypred)/vary
+
+
+def normalize_obs(obs):
+    scaling_values = [512, 7, 512, 512, 512, 512, 512, 512]
+    if len(obs.shape) == 1:
+        obs = [obs[j] / scaling_values[j] for j in range(len(obs))]
+    else:
+        for i in range(len(obs)):
+            obs[i] = [obs[i,j] / scaling_values[j] for j in range(len(obs[i]))]
+    return np.asarray(obs)  # TODO check whether other code works with this line
+
+
+# -----------------------------------------------------------------------------
+#                                     DQN
+# -----------------------------------------------------------------------------
+
+
+def make_epsilon_greedy_policy(predict_fn, nA):
+    """
+    Creates an epsilon-greedy policy based on a given Q-function approximator and epsilon.
+    Args:
+        predict_fn: An estimator function that returns q values for a given state
+        nA: Number of actions in the environment.
+
+    Returns:
+        A function that takes the observation and epsilon (The probability to select a random action [0,1]) as an
+        argument and returns the probabilities for each action in the form of a numpy array of length nA.
+    """
+
+    def policy_fn(observation, epsilon):
+        A = np.ones(nA, dtype=float) * epsilon / nA
+        q_values = predict_fn(observation, None, None)
+        best_action = np.argmax(q_values)
+        A[best_action] += (1.0 - epsilon)
+        return A
+
+    return policy_fn
+
 
 class ReplayBuffer:
     # Replay buffer for experience replay. Stores transitions.
@@ -405,62 +498,80 @@ class ReplayBuffer:
 
         return batch_obs, batch_actions, batch_next_obs, batch_rewards, batch_values, batch_dones  #, batch_states
 
+    def recent_and_next_batch(self, batch_size):
+        # Draw batch_sze/2 random samples
+        n_batched = int(batch_size / 2)
+        batch_indices = np.random.choice(len(self._data.obs), n_batched)  # TODO prioritized experience replay
+        batch_obs = np.array([self._data.obs[i] for i in batch_indices])
+        batch_actions = np.array([self._data.actions[i] for i in batch_indices])
+        batch_next_obs = np.array([self._data.next_obs[i] for i in batch_indices])
+        batch_rewards = np.array([self._data.rewards[i] for i in batch_indices])
+        batch_values = np.array([self._data.values[i] for i in batch_indices])
+        batch_dones = np.array([self._data.dones[i] for i in batch_indices])
+
+        # Take batch_size/2 recent samples and add them to mini batch
+        buffer_length = self.size()
+        batch_obs = np.concatenate((batch_obs, self._data.obs[buffer_length-n_batched:]))
+        batch_actions = np.concatenate((batch_actions, self._data.actions[buffer_length-n_batched:]))
+        batch_next_obs = np.concatenate((batch_next_obs, self._data.next_obs[buffer_length-n_batched:]))
+        batch_rewards = np.concatenate((batch_rewards, self._data.rewards[buffer_length-n_batched:]))
+        batch_values = np.concatenate((batch_values, self._data.values[buffer_length-n_batched:]))
+        batch_dones = np.concatenate((batch_dones, self._data.dones[buffer_length-n_batched:]))
+
+        # batch_states = np.array([self._data.states[i] for i in batch_indices]).squeeze()
+
+        return batch_obs, batch_actions, batch_next_obs, batch_rewards, batch_values, batch_dones  #, batch_states
+
+    # def recent_and_next_seq_batch(selfself, batch_size, trace_length):
+    #
+    #
+    #     sampled_traces = np.reshape(np.array(sampled_traces), newshape=[nbatch * trace_length, self.sample_size])
+    #     return
+
     def size(self):
         return len(self._data.obs)
 
-# def process_state(state):
-#     return np.array(list(state.values()))  # np.array([ .... ])
+
+class ExperienceBuffer():
+    def __init__(self, buffer_size=1000, sample_size=5):
+        self.buffer = []
+        self.buffer_size = buffer_size
+        self.sample_size = sample_size
+
+    def add(self, episode):
+        if len(self.buffer) + 1 >= self.buffer_size:
+            # logger.info('Buffer Length: %s' % len(self.buffer))
+            # logger.info('Index: %s' % ((len(self.buffer)+1) - self.buffer_size))
+            # logger.info('Types: %s %s ' % (type(self.buffer), type(self.buffer_size)))
+            self.buffer[0:(len(self.buffer)+1) - int(self.buffer_size)] = []  # empty first entries
+        self.buffer.append(episode)
+
+    def sample(self, nbatch, trace_length):
+        # Sample nbatch full episodes from the buffer and from each episode get observation sequences of length trace_length.
+        sampled_episodes = random.sample(population=self.buffer, k=nbatch)
+        sampled_traces = []
+        for episode in sampled_episodes:
+            if trace_length < len(episode):
+                start_idx = random.randint(0, len(episode)-trace_length)
+                trace = episode[start_idx:start_idx + trace_length]
+            else:
+                trace = episode
+            # print(trace.__len__())
+            sampled_traces.append(trace)
+        # print('eps ' + str(sampled_traces.__len__()))
+        # print('trace_length ' + str(sampled_traces[0].__len__()))
+        # print('elements pre sample ' + str(sampled_traces[0][0][0].size))
+        # print('buffer_length ' + str(self.buffer.__len__()))
+        sampled_traces = np.reshape(np.array(sampled_traces), newshape=[nbatch * trace_length, self.sample_size])
+        return sampled_traces
 
 
-def explained_variance(ypred,y):
-    """
-    Computes fraction of variance that ypred explains about y.
-    Returns 1 - Var[y-ypred] / Var[y]
-
-    interpretation:
-        ev=0  =>  might as well have predicted zero
-        ev=1  =>  perfect prediction
-        ev<0  =>  worse than just predicting zero
-
-    """
-    assert y.ndim == 1 and ypred.ndim == 1
-    vary = np.var(y)
-    return np.nan if vary==0 else 1 - np.var(y-ypred)/vary
-
-
-def normalize_obs(obs):
-    scaling_values = [512, 7, 512, 512, 512, 512, 512, 512]
-    if len(obs.shape) == 1:
-        obs = [obs[j] / scaling_values[j] for j in range(len(obs))]
-    else:
-        for i in range(len(obs)):
-            obs[i] = [obs[i,j] / scaling_values[j] for j in range(len(obs[i]))]
-    return obs
-
-
-# -----------------------------------------------------------------------------
-#                                     DQN
-# -----------------------------------------------------------------------------
-
-
-def make_epsilon_greedy_policy(predict_fn, nA):
-    """
-    Creates an epsilon-greedy policy based on a given Q-function approximator and epsilon.
-    Args:
-        predict_fn: An estimator function that returns q values for a given state
-        nA: Number of actions in the environment.
-
-    Returns:
-        A function that takes the observation and epsilon (The probability to select a random action [0,1]) as an
-        argument and returns the probabilities for each action in the form of a numpy array of length nA.
-    """
-
-    def policy_fn(observation, epsilon):
-        A = np.ones(nA, dtype=float) * epsilon / nA
-        q_values = predict_fn(observation, None, None)
-        best_action = np.argmax(q_values)
-        A[best_action] += (1.0 - epsilon)
-        return A
-
-    return policy_fn
-
+# These functions allows us to update the parameters of our target network with those of the primary network.
+def update_target_graph(train_vars,tau):
+    nvars = len(train_vars)
+    op_holder = []
+    for idx, var in enumerate(train_vars[0:nvars//2]):
+        a = (var.value()*tau)
+        b = ((1-tau)*train_vars[idx+nvars//2].value())
+        op_holder.append(train_vars[idx+nvars//2].assign(a + b))
+    return op_holder

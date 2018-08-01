@@ -5,6 +5,7 @@ Helpers for scripts like run_ple.py.
 import os
 import json, time, csv
 import gym
+import numpy as np
 
 # import logger
 import envs.environment
@@ -19,7 +20,7 @@ def make_ple_envs(env_id, num_env, seed, start_index=0, *args, **kwargs):
     def make_env(rank): # pylint: disable=C0111
         def _thunk():
             env = gym.make(env_id)
-            env.seed(seed + rank, *args, **kwargs)
+            env.seed(seed + rank, *args, **kwargs) # TODO should be after the monitor command!
             env = Monitor(env, None, **kwargs)
             # env = Monitor(env, logger.get_dir() and os.path.join(logger.get_dir(), str(rank)), **kwargs)
             return env
@@ -35,15 +36,116 @@ def make_ple_env(env_id, seed, **kwargs):
 
 
 def arg_parser():
-    """
-    Create an empty argparse.ArgumentParser.
-    """
     import argparse
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--env', help='environment ID', default='FlappyBird-v1')
-    parser.add_argument('--seed', help='RNG seed', type=int, default=0)
-    parser.add_argument('--total_timesteps', help='Total number of env steps', type=int, default=int(10e5))
+    parser.add_argument('--test_env', help='testv environment ID', default='FlappyBird-v1')
+    # parser.add_argument('--nenvs', help='Number of environments', type=int, default=3)
+    # parser.add_argument('--policy', help='Policy architecture', choices=['mlp', 'casta', 'largemlp'],
+    #                     default='largemlp')
+    # parser.add_argument('--max_grad_norm', help='Maximum gradient norm up to which gradient is not clipped', type=float,
+    #                     default=0.01)
+    # parser.add_argument('--gamma', help='Discount factor for discounting the reward', type=float, default=0.95)
+    parser.add_argument('--log_interval',
+                        help='parameter values stored in tensorboard summary every <log_interval> model update step. 0 --> no logging ',
+                        type=int, default=300)
+    parser.add_argument('--test_interval', help='Model is evaluated after <test_interval> model updates. 0 = do not evaluate while learning.', type=int,
+                        default=0) # TODO
+    parser.add_argument('--show_interval', help='Env is rendered every n-th episode. 0 = no rendering', type=int,
+                        default=0)
+    parser.add_argument('--logdir', help='directory where logs are stored',
+                        default='/home/mara/Desktop/logs/A2C_OAI_NENVS')
+    parser.add_argument('--seed', help='RNG seed', type=int, default=2)
+    parser.add_argument('--total_timesteps', help='Total number of env steps', type=int, default=int(1e3)) # TODO
+    parser.add_argument('--runcount_limit', help='amount of algorithm evaluations allowed to optimize hyperparameters',
+                        type=int, default=int(3))
+    parser.add_argument('--eval_model', help='Eval all stored models, only the final model or only the intermediately stored models (while testing the best algorithm configs)', choices=['all', 'final'],
+                        default='all') # TODO remove config option
+    parser.add_argument('--run_parallel', help='flag which determines whether smac instances are run in parallel or not.', choices=["True", "true", "False", "false"], type=str, default="false")
+    parser.add_argument('--instance_id', help='id of the smac instance', type=int, default=1)
+    parser.add_argument('--keep_model', help='Whether or not to keep all saved inter_models.', type=int, default=0)
+    parser.add_argument('--activ_fcn', help='Activation functions of network layers', choices=['relu6', 'elu', 'mixed'], type=str, default='relu6')
     return parser
+
+class ParamDict():
+    def __init__(self):
+        self.dict = {}
+
+    def add_num_param(self, name, lb, ub, default, dtype):
+        self.dict[name] = (lb, ub, default, dtype)
+
+    def add_cat_param(self, name, options, default, dtype):
+        self.dict[name] = (options, default, dtype)
+
+    def setDefaults(self, paramsDict):
+        for k,v in self.dict.items():
+            paramsDict[k] = v[-2]
+
+    def check_type(self, val, dtype):
+        return isinstance(val, dtype)
+
+    def check_limits(self, val, *args):
+        if len(args) == 1:
+            if args[0] is not None:
+                return val in args[0]
+            else:
+                return True  # if no option is given, i.e. in logdir case
+        else:
+            return (args[0] <= val) & (val < args[1])
+
+    def check_params(self, **kwargs):
+        params = {}
+        self.setDefaults(params)
+        for k,v in kwargs.items():
+            if self.dict.get(k):
+                if self.check_type(v, self.dict[k][-1]):
+                    if self.check_limits(v, *self.dict[k][:-2]):
+                        params[k] = v
+                    else:
+                        print('Argument %s is out of bounds. Value is %s. Should be in %s. Set default.' % (k, v, self.dict[k][:-2]))
+                else:
+                    print('Argument %s doesn\'t have expected data type %s. Set default.' % (k, self.dict[k][-1]))
+        return params
+
+def params_parser():
+    paramDict = ParamDict()
+    paramDict.add_cat_param("env", options=['FlappyBird-v1', 'FlappyBird-v2', 'FlappyBird-v3', 'FlappyBird-v4'], default='FlappyBird-v1', dtype=str)
+    paramDict.add_cat_param("test_env", options=['FlappyBird-v1', 'FlappyBird-v2', 'FlappyBird-v3', 'FlappyBird-v4'], default='FlappyBird-v1', dtype=str)
+    paramDict.add_num_param("total_timesteps", lb=0, ub=10e15, default=int(10e3), dtype=int)
+    paramDict.add_num_param("seed", lb=0, ub=np.inf, default=123, dtype=int)
+    # paramDict.add_cat_param("policy", options=['mlp', 'casta', 'largemlp'], default='largemlp', dtype=str)
+    # paramDict.add_num_param("nenvs", lb=1, ub=16, default=3, dtype=int)
+    # paramDict.add_num_param("nsteps", lb=1, ub=100, default=50, dtype=int)
+    # paramDict.add_num_param("vf_coeff", lb=1e-2, ub=0.4, default=0.2, dtype=float)
+    # paramDict.add_num_param("ent_coeff", lb=1e-9, ub=1e-2, default=1e-7, dtype=float)
+    # paramDict.add_num_param("gamma", lb=0.5, ub=0.99, default=0.90, dtype=float)
+    # paramDict.add_num_param("lr", lb=1e-9, ub=1e-2, default=5e-4, dtype=float)
+    # paramDict.add_cat_param("lrschedule", options=['constant', 'linear', 'double_linear_con'], default='constant',
+    #                         dtype=str)
+    # paramDict.add_num_param("max_grad_norm", lb=0.001, ub=20, default=0.01, dtype=float)
+    # paramDict.add_num_param("units_shared_layer1", lb=8, ub=260, default=64, dtype=int),
+    # paramDict.add_num_param("units_shared_layer2", lb=8, ub=260, default=64, dtype=int),
+    # paramDict.add_num_param("units_policy_layer", lb=8, ub=260, default=64, dtype=int),
+    paramDict.add_num_param("log_interval", lb=0, ub=1e7, default=100, dtype=int)
+    paramDict.add_num_param("test_interval", lb=0, ub=1e7, default=0, dtype=int)
+    paramDict.add_num_param("show_interval", lb=0, ub=1e7, default=0, dtype=int)
+    paramDict.add_cat_param("logdir", options=None, default='/home/mara/Desktop/logs/A2C_OAI_NENVS', dtype=str)
+    paramDict.add_cat_param("eval_model", options=['all', 'final', 'inter'], default='all', dtype=str)
+    paramDict.add_num_param("keep_model", lb=0, ub=50, default=7, dtype=int)  # 'Whether or not to keep all saved inter_models. 0 -> keep all
+    paramDict.add_cat_param("activ_fcn", options=['relu6', 'elu', 'mixed'], default='relu6', dtype=str)
+    return paramDict  # .check_params(**kwargs)
+
+
+# def arg_parser():
+#     """
+#     Create an empty argparse.ArgumentParser.
+#     """
+#     import argparse
+#     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+#     parser.add_argument('--env', help='environment ID', default='FlappyBird-v1')
+#     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
+#     parser.add_argument('--total_timesteps', help='Total number of env steps', type=int, default=int(10e5))
+#     return parser
 
 
 from gym.core import Wrapper
