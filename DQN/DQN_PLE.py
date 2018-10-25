@@ -3,15 +3,14 @@ import numpy as np
 import sys, os, datetime, time
 import csv
 import tensorflow as tf
-import joblib
+# import joblib
 import logging
 from collections import deque
 # from collections import namedtuple
 
-from models_OAI import DQN, DQN_smac, DRQN
 from utils_OAI import ReplayBuffer
-from utils_OAI import make_epsilon_greedy_policy, normalize_obs, update_target_graph
-from utils_OAI import Scheduler, make_path, find_trainable_variables, make_session, set_global_seeds
+from utils_OAI import normalize_obs, update_target_graph, add_to_collection_rnn_state
+from utils_OAI import make_session, set_global_seeds
 
 # TODO: implement saving of checkpoints
 # TODO: add more statistics values.
@@ -38,9 +37,9 @@ class DQNAgent():
     Neural Network class based on TensorFlow.
     """
 
-    def __init__(self, q_network, ob_space, ac_space, lr, lrschedule, max_grad_norm,
-                 units_per_hlayer, batch_size, trace_length, total_timesteps, log_interval, update_interval, logdir, keep_model,
-                 activ_fcn, tau):
+    def __init__(self, q_network, ob_space, ac_space,
+                 lr, max_grad_norm, units_per_hlayer, activ_fcn, log_interval, logdir,
+                 batch_size, trace_length, tau, update_interval, keep_model):
         self.logger = logging.getLogger(self.__module__ + "." + self.__class__.__name__)
         self.logger.info("Set up DQN learning agent")
         self.num_steps_trained = 0
@@ -48,7 +47,7 @@ class DQNAgent():
 
         sess = make_session()  # TODO add CPU config information
 
-        nbatch = batch_size
+        # nbatch = batch_size
         self.global_step = tf.get_variable('global_step',
                                            [],
                                            tf.int32,
@@ -57,8 +56,8 @@ class DQNAgent():
 
 
         # Targets in loss computation
-        QT = tf.placeholder(shape=[nbatch*trace_length], dtype=tf.float32, name='QT')  # target Q values
-        A = tf.placeholder(shape=[nbatch*trace_length], dtype=tf.int32, name='A')  # action indices
+        QT = tf.placeholder(shape=[batch_size*trace_length], dtype=tf.float32, name='QT')  # target Q values
+        A = tf.placeholder(shape=[batch_size*trace_length], dtype=tf.int32, name='A')  # action indices
 
         # nbatch = self.target_in.shape[1].value if (self.target_in.shape[0].value is not None) else 0
 
@@ -102,9 +101,11 @@ class DQNAgent():
 
         tf.add_to_collection('inputs', eval_model.X)
         tf.add_to_collection('predQ', eval_model.predQ)
+        if eval_model.initial_state is not None:
+            add_to_collection_rnn_state('state_in', eval_model.rnn_state_in)
+            add_to_collection_rnn_state('state_out', eval_model.rnn_state_out)
         # tf.add_to_collection('step', eval_model.step)
 
-        lr = Scheduler(v=lr, nvalues=total_timesteps, schedule=lrschedule)
         tf.global_variables_initializer().run(session=sess)
 
         def train(obs, actions, targets, states):
@@ -138,8 +139,8 @@ class DQNAgent():
             return total_loss
 
         # tf.add_to_collection(tf.GraphKeys.TRAIN_OP, self.pred_out)
-        saver = tf.train.Saver(max_to_keep=7)
-        # saver = tf.train.Saver(max_to_keep=keep_model)
+        # saver = tf.train.Saver(max_to_keep=2)
+        saver = tf.train.Saver(max_to_keep=keep_model)
 
         def update_target(target_op_holder):
             for op in target_op_holder:
@@ -168,8 +169,8 @@ class DQNAgent():
             #     restores.append(p.assign(loaded_p))
             # ps = sess.run(restores)
 
-        def test_run(env, n_eps, n_pipes):  # TODO update test run!
-            self.logger.debug('Evaluating eval_model')
+        def test_run(env, n_eps, n_pipes):
+            self.logger.info('Evaluating current agent')
             ep_return = []
             ep_length = []
             for i in range(0, n_eps):  # TODO parallelize this here!
@@ -177,7 +178,11 @@ class DQNAgent():
                 obs = normalize_obs(obs)
                 done = False
                 if eval_model.initial_state is not None:
-                    rnn_s_in = (np.zeros([1, units_per_hlayer[2]]), np.zeros([1, units_per_hlayer[2]]))
+                    if len(eval_model.initial_state) > 1:
+                        rnn_s_in = (np.zeros(eval_model.initial_state[0].shape), np.zeros(eval_model.initial_state[1].shape))  # init lstm cell vector
+                    else:
+                        rnn_s_in = np.zeros(eval_model.initial_state.shape)  # init gru cell vector
+                    # rnn_s_in = (np.zeros([1, units_per_hlayer[2]]), np.zeros([1, units_per_hlayer[2]]))
                 total_return = 0
                 total_length = 0
 
@@ -193,7 +198,7 @@ class DQNAgent():
                     obs = normalize_obs(obs)
                     total_length += 1
                     total_return += reward
-                    print(reward)
+                    # print(reward)
                     if eval_model.initial_state is not None:
                         rnn_s_in = rnn_s_out
                 # logger.debug('*****************************************')
@@ -217,6 +222,7 @@ class DQNAgent():
         self.save = save
         self.load = load
         self.test_run = test_run
+        self.sess = sess
 
         if log_interval > 0:
             self.summary_writer = tf.summary.FileWriter(logdir, graph_def=sess.graph_def)
@@ -261,35 +267,41 @@ class DQNAgent():
 #         return op_holder
 
 
-def q_learning(q_network, env, test_env, seed, total_timesteps=int(1e8), gamma=0.95, epsilon=0.4, epsilon_decay=.95,
-               buffer_size=4000, batch_size=128, trace_length=32, lr=5e-4, lrschedule='linear',
-               max_grad_norm=0.01, units_per_hlayer=(8,8,8),
-               target=None, log_interval= 100, test_interval=0, show_interval=0, update_interval=30, logdir=None,
-               keep_model=7, activ_fcn='relu6', tau=0.99):
-    """
-    Q-Learning algorithm for off-policy TD control using Function Approximation.
-    Finds the optimal greedy policy while following an epsilon-greedy policy.
-    Implements the options of online learning or using experience replay and also
-    target calculation by target networks, depending on the flags. You can reuse
-    your Q-learning implementation of the last exercise.
-
-    Args:
-        env: PLE game
-        approx: Action-Value function estimator
-        num_episodes: Number of episodes to run for.
-        max_time_per_episode: maximum number of time steps before episode is terminated
-        discount_factor: gamma, discount factor of future rewards.
-        epsilon: Chance to sample a random action. Float betwen 0 and 1.
-        epsilon_decay: decay rate of epsilon parameter
-        use_experience_replay: Indicator if experience replay should be used.
-        batch_size: Number of samples per batch.
-        target: Slowly updated target network to calculate the targets. Ignored if None.
-
-    Returns:
-        An EpisodeStats object with two numpy arrays for episode_lengths and episode_rewards.
-    """
+def q_learning(q_network, env, test_env, seed, total_timesteps,
+               log_interval, test_interval, show_interval, logdir,
+               lr, max_grad_norm, units_per_hlayer, activ_fcn,
+               gamma=0.95, epsilon=0.4, epsilon_decay=.95,
+               buffer_size=4000, batch_size=128, trace_length=32,
+               tau=0.99, update_interval=30, early_stop=False, keep_model=2,
+               save_model=True, restore_model=False, save_traj=False):
+               #  lr=5e-4,
+               # max_grad_norm=0.01, units_per_hlayer=(8,8,8),
+               # target=None, log_interval= 100, test_interval=0, show_interval=0, update_interval=30, logdir=None,
+               # keep_model=7, activ_fcn='relu6', tau=0.99):
+    # """
+    # Q-Learning algorithm for off-policy TD control using Function Approximation.
+    # Finds the optimal greedy policy while following an epsilon-greedy policy.
+    # Implements the options of online learning or using experience replay and also
+    # target calculation by target networks, depending on the flags. You can reuse
+    # your Q-learning implementation of the last exercise.
+    #
+    # Args:
+    #     env: PLE game
+    #     approx: Action-Value function estimator
+    #     num_episodes: Number of episodes to run for.
+    #     max_time_per_episode: maximum number of time steps before episode is terminated
+    #     discount_factor: gamma, discount factor of future rewards.
+    #     epsilon: Chance to sample a random action. Float betwen 0 and 1.
+    #     epsilon_decay: decay rate of epsilon parameter
+    #     use_experience_replay: Indicator if experience replay should be used.
+    #     batch_size: Number of samples per batch.
+    #     target: Slowly updated target network to calculate the targets. Ignored if None.
+    #
+    # Returns:
+    #     An EpisodeStats object with two numpy arrays for episode_lengths and episode_rewards.
+    # """
     logger = logging.getLogger(__name__)
-    logger.info(datetime.time)
+    # logger.info(datetime.time)
 
     tf.reset_default_graph()
     set_global_seeds(seed)
@@ -299,43 +311,56 @@ def q_learning(q_network, env, test_env, seed, total_timesteps=int(1e8), gamma=0
     ac_space = env.action_space
     nd, = ob_space.shape
     n_ac = ac_space.n
-    use_exp_replay = False if batch_size == 1 else True
 
     # Create learning agent and the replay buffer
     agent = DQNAgent(q_network=q_network,
                      ob_space=ob_space,
                      ac_space=ac_space,
-                     batch_size=batch_size,
-                     trace_length=trace_length,
                      lr=lr,
-                     lrschedule=lrschedule,
                      max_grad_norm=max_grad_norm,
                      units_per_hlayer=units_per_hlayer,
-                     total_timesteps=total_timesteps,
-                     log_interval=log_interval,
-                     update_interval=update_interval,
-                     logdir=logdir,
-                     keep_model=keep_model,
                      activ_fcn=activ_fcn,
-                     tau=tau)
-    summary_writer = agent.get_summary_writer()
-    result_path = os.path.join(logdir, 'results.csv')
+                     log_interval=log_interval,
+                     logdir=logdir,
 
-    if use_exp_replay:
-        replay_buffer = ReplayBuffer(buffer_size)
+                     batch_size=batch_size,
+                     trace_length=trace_length,
+                     update_interval=update_interval,
+                     tau=tau,
+                     keep_model=keep_model)
+    summary_writer = agent.get_summary_writer()
+    result_path = os.path.join(logdir, 'train_results.csv')
+    if save_traj:
+        rew_traj = []
+        rew_results_path = os.path.join(logdir, ('lr'+str(lr)+'_tracking_results.csv'))
+    else:
+        rew_results_path = None
+    replay_buffer = ReplayBuffer(buffer_size)
 
     # Keeps track of useful statistics
     stats = EpisodeStats
 
+    if restore_model:
+        for el in os.listdir(logdir):
+            if 'final' in el and '.meta' in el:
+                # Load pre trained model and set network parameters
+                logger.info('load %s' % os.path.join(logdir, el[:-5]))
+                agent.load(os.path.join(logdir, el[:-5]))
+                # Reset global step parameter.
+                agent.sess.run(agent.global_step.assign(0))
+
     # ------------------ TRAINING --------------------------------------------
     logger.info("Start Training")
+    early_stopped = False
     i_episode, i_sample, i_train = 0, 0, 0
     len, rew = 0, 0
-    rolling_mean = deque(maxlen=30)
-    nbatch = batch_size
-    return_threshold = 40
+    horizon = 100
+    reward_window = deque(maxlen=horizon)
+    avg_rm = deque(maxlen=30)
+    nbatch = batch_size * trace_length
+    return_threshold = -0.05  # 40
 
-    # Reset env
+    # Reset envnn
     obs = env.reset()
     obs = normalize_obs(obs)
     done = False
@@ -343,7 +368,6 @@ def q_learning(q_network, env, test_env, seed, total_timesteps=int(1e8), gamma=0
     if rnn_state0 is None:  # If we use a normal feed forward architecture, we sample a batch of single samples, not a batch of sequences.
         trace_length = 1
 
-    # TODO
     # Set the target network to be equal to the primary network
     agent.update_target(agent.target_ops)
 
@@ -368,23 +392,22 @@ def q_learning(q_network, env, test_env, seed, total_timesteps=int(1e8), gamma=0
             action = AP[0]
         next_obs, reward, done, _ = env.step(action)
         next_obs = normalize_obs(next_obs)
-        reward -= 1e-5
+        # print(next_obs)
+        # reward -= 1e-5
+        # print(reward, next_obs)
         i_sample += 1
         # render only every i-th episode
         if show_interval != 0:
             if i_episode % show_interval == 0:
                 env.render()
-                # time.sleep(0.2)
+                # time.sleep(1)
 
         # episode stats
         # stats['episode_lengths'][i_episode] += 1
         # stats['episode_rewards'][i_episode] += reward
-        len += 1  # TODO check whether this works
+        len += 1
         rew += reward
-        rolling_mean.append(reward)
-
-        # TODO use scalar len and reward variable to not need to access the array everytime
-
+        reward_window.append(reward)
 
         # When episode is done, add episode information to tensorboard summary and stats
         if done:  # env.game_over():
@@ -402,7 +425,7 @@ def q_learning(q_network, env, test_env, seed, total_timesteps=int(1e8), gamma=0
                 summary_writer.add_summary(summary, i_episode)
                 summary_writer.flush()
 
-            if rew > return_threshold:
+            if save_model and rew > return_threshold:
                 return_threshold = rew
                 logger.info('Save model at max reward %s' % return_threshold)
                 agent.save('inter_model')
@@ -410,24 +433,24 @@ def q_learning(q_network, env, test_env, seed, total_timesteps=int(1e8), gamma=0
             i_episode += 1
             len, rew = 0, 0
 
-        # Compute TD target and update the model
-        if use_exp_replay:  # TODO add update_interval?
-            # Update replay buffer
-            replay_buffer.add_transition(obs, action, next_obs, reward, done)
+        # Update replay buffer
+        replay_buffer.add_transition(obs, action, next_obs, reward, done)
+        rew_traj.append(reward)
 
-            if replay_buffer.size() > nbatch and (i_sample % update_interval == 0):
-
-                if summary_writer is not None and (env.spec._env_name == 'ContFlappyBird'):
-                    rm = sum(rolling_mean)/30
+        # Update model parameters every #update_interval steps. Use real experience and replayed experience.
+        if replay_buffer.size() > nbatch and (i_sample % update_interval == 0):
+            if (env.spec._env_name == 'ContFlappyBird'):
+                rm = sum(reward_window) / horizon
+                if summary_writer is not None:
                     s_summary = tf.Summary()
                     s_summary.value.add(tag='envs/isample_return',
                                       simple_value=rm)
                     summary_writer.add_summary(s_summary, i_sample)
 
-                    t_summary = tf.Summary()
-                    t_summary.value.add(tag='envs/itrain_return',
-                                      simple_value=rm)
-                    summary_writer.add_summary(t_summary, i_train)
+                    # t_summary = tf.Summary()
+                    # t_summary.value.add(tag='envs/itrain_return',
+                    #                   simple_value=rm)
+                    # summary_writer.add_summary(t_summary, i_train)
                     summary_writer.flush()
 
                 # avg_ep_return = np.mean(stats["episode_rewards"][-30:])
@@ -435,66 +458,80 @@ def q_learning(q_network, env, test_env, seed, total_timesteps=int(1e8), gamma=0
                 #     max_avg_ep_return = avg_ep_return
                 #     model.save(logdir, 'inter_model', )
 
-                if rew > return_threshold and (env.spec._env_name == 'ContFlappyBird'):
-                    return_threshold = rew
-                    logger.info('Save model at max reward %s' % return_threshold)
+                if save_model and rm > return_threshold:
+                    return_threshold = rm
+                    logger.info('Save model at max rolling mean %s' % return_threshold)
                     agent.save('inter_model')
 
-                agent.update_target(agent.target_ops)
+                avg_rm.append(rm)
 
-                # reset rnn state (history knowledge) before every training step
-                rnn_state_train = agent.train_initial_state
+            if early_stop:
+                if (i_sample > 60000) and (i_sample <= (60000 + update_interval)): # TODO how to determine early-stopping criteria non-heuristically, but automatically? - BOHB algorithm?
+                    if (sum(avg_rm) / 30) <= -0.88:
+                        print('breaked')
+                        early_stopped = True
+                        break
 
-                # Sample training mini-batch from replay buffer
-                if rnn_state_train is not None:
-                    mb_obs, mb_actions, mb_next_obs, mb_rewards, _, batch_dones = \
-                                                    replay_buffer.recent_and_next_batch_of_seq(nbatch, trace_length)
-                else:
-                    mb_obs, mb_actions, mb_next_obs, mb_rewards, _, batch_dones = \
-                                                    replay_buffer.recent_and_next_batch(nbatch)
-                # mb_obs, mb_actions, mb_next_obs, mb_rewards, _, batch_dones = \
-                #     replay_buffer.next_batch(nbatch)
-                # mb_actions = list(zip(range(mb_actions.shape[0]), mb_actions))  # TODO check whether labeling of each sequence works.
+            # TODO implement performance measure which optimizes time until convergence. Convergence defined as avg of last 30 moving averages with horizon 100??
+            # if (sum(avg_rm)/30) > 0.0:
+            #     break  # and return i_sample but only do this if performance measure =
 
-                # mb_actions = list(zip(range(mb_actions.__len__()), mb_actions))  # TODO check whether labeling of each sequence works.
+            agent.update_target(agent.target_ops)
 
-                # Calculate TD target for batch. Use "old" fixed parameters if target network is available
-                # to compute targets else use "old" parameters of value function estimate.
-                # mb_next_obs = np.reshape(mb_next_obs, (-1, nd))
-                mb_next_q_values, _ = (agent.target_model if target else agent.train_model).predict(mb_next_obs, rnn_state_train)  # TODO remove no-trget option
-                mb_best_next_action = np.argmax(mb_next_q_values, axis=1)
-                mb_td_target = [mb_rewards[j] + gamma * mb_next_q_values[j][mb_best_next_action[j]]
-                                for j in range(nbatch*trace_length)]
+            # reset rnn state (history knowledge) before every training step
+            rnn_state_train = agent.train_initial_state
 
-                # Update Q value estimator parameters by optimizing between Q network and Q-learning targets
-                loss = agent.train(mb_obs, mb_actions, mb_td_target, rnn_state_train)
-                i_train += 1
+            # Sample training mini-batch from replay buffer
+            if rnn_state_train is not None:
+                mb_obs, mb_actions, mb_next_obs, mb_rewards, _, batch_dones = \
+                                                replay_buffer.recent_and_next_batch_of_seq(batch_size, trace_length)
+            else:
+                mb_obs, mb_actions, mb_next_obs, mb_rewards, _, batch_dones = \
+                                                replay_buffer.recent_and_next_batch(batch_size)
+            # mb_obs, mb_actions, mb_next_obs, mb_rewards, _, batch_dones = \
+            #     replay_buffer.next_batch(nbatch)
+            # mb_actions = list(zip(range(mb_actions.shape[0]), mb_actions))  # TODO check whether labeling of each sequence works.
+            # mb_actions = list(zip(range(mb_actions.__len__()), mb_actions))  # TODO check whether labeling of each sequence works.
 
-                # If test_interval > 0 the learned model is evaluated every "test_interval" gradient updates
-                if test_interval > 0 and i_train > 0 and (i_train % test_interval == 0):
-                    print('testing')
-                    ep_return = agent.test_run(test_env, n_eps=30, n_pipes=2000)
-                    print(ep_return)
-                    with open(result_path, "a") as csvfile:
-                        writer = csv.writer(csvfile)
-                        ep_return = [str(p) for p in ep_return]
-                        ep_return.insert(0, ('step_%s' % i_sample))
-                        writer.writerow(ep_return)
-        else:  # TODO remove this else option.
-            next_q_values = (target if target else agent).predict([next_obs])
-            best_next_action = np.argmax(next_q_values, axis=1)
-            td_target = reward + (gamma * next_q_values[0] * best_next_action)
-            loss = agent.train([obs], [[0, action]], td_target, None)
+            # Calculate TD target for batch. Use "old" fixed parameters if target network is available
+            # to compute targets else use "old" parameters of value function estimate.
+            # mb_next_obs = np.reshape(mb_next_obs, (-1, nd))
+            mb_next_q_values, _ = agent.target_model.predict(mb_next_obs, rnn_state_train)
+            mb_best_next_action = np.argmax(mb_next_q_values, axis=1)
+            mb_td_target = [mb_rewards[j] + gamma * mb_next_q_values[j][mb_best_next_action[j]]
+                            for j in range(nbatch)]
+
+            # Update Q value estimator parameters by optimizing between Q network and Q-learning targets
+            loss = agent.train(mb_obs, mb_actions, mb_td_target, rnn_state_train)
+            logger.info('Trained')
             i_train += 1
 
             # If test_interval > 0 the learned model is evaluated every "test_interval" gradient updates
             if test_interval > 0 and i_train > 0 and (i_train % test_interval == 0):
-                ep_return = agent.test_run(test_env, n_eps=1, n_pipes=2000)
+                # print('testing')
+                ep_return = agent.test_run(test_env, n_eps=10, n_pipes=2000)
+                # print(ep_return)
                 with open(result_path, "a") as csvfile:
                     writer = csv.writer(csvfile)
-                    ep_return = [str(p) for p in ep_return]
-                    ep_return.insert(0, ('step_%s' % i_sample))
+                    # ep_return = [str(p) for p in ep_return]
+                    # ep_return.insert(0, ('step_%s' % i_sample))
+                    ep_return[0:0] = [i_sample, i_train]  # TODO test wehther results has appropriate format of i_sample, i_train, eps1, eps2, eps3, ... here
                     writer.writerow(ep_return)
+        # else:
+        #     next_q_values = (target if target else agent).predict([next_obs])
+        #     best_next_action = np.argmax(next_q_values, axis=1)
+        #     td_target = reward + (gamma * next_q_values[0] * best_next_action)
+        #     loss = agent.train([obs], [[0, action]], td_target, None)
+        #     i_train += 1
+        #
+        #     # If test_interval > 0 the learned model is evaluated every "test_interval" gradient updates
+        #     if test_interval > 0 and i_train > 0 and (i_train % test_interval == 0):
+        #         ep_return = agent.test_run(test_env, n_eps=1, n_pipes=2000)
+        #         with open(result_path, "a") as csvfile:
+        #             writer = csv.writer(csvfile)
+        #             ep_return = [str(p) for p in ep_return]
+        #             ep_return.insert(0, ('step_%s' % i_sample))
+        #             writer.writerow(ep_return)
 
         if done:
             # Reset the model
@@ -506,61 +543,85 @@ def q_learning(q_network, env, test_env, seed, total_timesteps=int(1e8), gamma=0
         rnn_state0 = next_rnn_state
 
     # Save final model when training is finished.
-    agent.save('final_model')
-    logger.info('Finished Training. Saving Final model.')
+    if save_model:
+        agent.save('final_model')
+        logger.info('Finished Training. Saving Final model.')
+
+    if rew_results_path is not None:
+        logger.info('Save reward trajectory to %s' % rew_results_path)
+        with open(rew_results_path, "a") as csvfile:
+            writer = csv.writer(csvfile)
+            traj = np.asanyarray(rew_traj).reshape(-1).tolist()
+            traj[0:0] = [np.mean(traj)]  # i_train, i_sample
+            writer.writerow(traj)
 
     logger.info('*******************************************************')
     logger.info('Total number of interactions with the environment: %s' % i_sample)
-    logger.info('Total number of finished episodes during training: %s' % i_episode)
+    # logger.info('Total number of finished episodes during training: %s' % i_episode)
     logger.info('Total number of parameter updates during training: %s' % i_train)
+    # logger.info('Training was early stopped: %s' % early_stopped)
     logger.info('*******************************************************\n')
 
-    # return stats
+    return early_stopped, i_sample
 
-from run_ple_utils import make_ple_env
+
 if __name__ == '__main__':
+    from models_OAI import DQN, DQN_smac, LSTM_DQN, GRU_DQN
+    from run_ple_utils import make_ple_env
 
     # TODO batch size has to be smaller than
-
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
     # Params
-    DISCOUNT = 0.90
-    EPSILON = 0.5
-    EPS_DECAY = 0.8
-    LR=5e-2
-    MAX_REPLAY_BUF_SIZE = 1000
-    BATCH_SIZE = 4
+    # BOHB config LOW / SMAC config 3
+    ACTIV_FCN = 'elu'
+    DISCOUNT = 0.82
+    EPSILON = 0.35
+    EPS_DECAY = 0.990
+    TAU = 0.824
+    LR = 0.006
+    LAYER1 = 71
+    LAYER2 = 65
+    LAYER3 = 85
+    BATCH_SIZE = 64
+
+    MAX_REPLAY_BUF_SIZE = 500
+    BATCH_SIZE = 64
     MAX_GRAD_NORM=0.1
-    NUM_TRAIN_UPDATES = int(2e6)
-    TARGET = True
-    SAVE_INTERVAL = 500
-    LOG_INTERVAL = 5
-    DATE = str(datetime.datetime.today())
-    LOGDIR = os.path.join('/home/mara/Desktop/logs/DQN', DATE)
+    NUM_TRAIN_UPDATES = int(2e3)
+    # TARGET = True
+    # SAVE_INTERVAL = 500
+    LOG_INTERVAL = 30
+    # DATE = datetime.datetime.today().strftime('%Y_%m_%d_%H%M%S')  #str(datetime.datetime.today())
+    LOGDIR = os.path.join('/home/mara/Desktop/logs/LSTM_DQN_test', 'dqn_output2')
 
     seed = 1
-    env = make_ple_env('ContFlappyBird-v1', seed=seed)
+    env = make_ple_env('ContFlappyBird-hNS-nrf0-train-v0', seed=seed)
     test_env = make_ple_env('ContFlappyBird-v3', seed=seed)
     # env = make_ple_env('FlappyBird-v1', seed=seed)
     # test_env = make_ple_env('FlappyBird-v1', seed=seed)
-    q_learning(q_network=DQN_smac,
+    q_learning(q_network=LSTM_DQN,
                env=env,
                test_env=test_env,
                seed=seed,
                total_timesteps=NUM_TRAIN_UPDATES,
+               log_interval=LOG_INTERVAL,
+               test_interval=0,
+               show_interval=0,
+               logdir=LOGDIR,
+               # keep_model=7,
+               lr=LR,
+               max_grad_norm=MAX_GRAD_NORM,
+               units_per_hlayer=(LAYER1,LAYER2,LAYER3),
+               activ_fcn=ACTIV_FCN,
                gamma=DISCOUNT,
                epsilon=EPSILON,
                epsilon_decay=EPS_DECAY,
-               tau=0.99,
-               lr=LR,
                buffer_size=MAX_REPLAY_BUF_SIZE,
-               batch_size=BATCH_SIZE,
-               trace_length=1,
-               max_grad_norm=MAX_GRAD_NORM,
-               units_per_hlayer=(8,8,8),
-               target=TARGET,
-               log_interval=LOG_INTERVAL,
-               test_interval=10,
-               show_interval=1,
-               logdir=LOGDIR,
-               activ_fcn='relu6')
+               batch_size=5,
+               trace_length=8,
+               # target=TARGET,
+               tau=TAU,
+               update_interval=64,
+               save_traj=True)
     env.close()

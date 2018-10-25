@@ -1,10 +1,11 @@
 import logging
 import numpy as np
+import csv
 from smac.configspace import ConfigurationSpace
 from ConfigSpace.hyperparameters import CategoricalHyperparameter, \
     UniformFloatHyperparameter, \
     UniformIntegerHyperparameter
-# from ConfigSpace.conditions import InCondition
+from ConfigSpace.conditions import InCondition, LessThanCondition
 
 # Import SMAC utilities
 from smac.tae.execute_func import ExecuteTAFuncDict
@@ -14,7 +15,7 @@ from smac.facade.smac_facade import SMAC
 import sys, os, datetime, glob
 sys.path.append(os.path.dirname(sys.path[0]))
 from DQN.run_dqn import run_dqn_smac
-from run_ple_utils import arg_parser
+from run_ple_utils import smac_parser
 
 
 # def arg_parser():
@@ -52,20 +53,17 @@ from run_ple_utils import arg_parser
 #     return args
 
 def dqn_arg_parser():
-    parser = arg_parser()
-    parser.add_argument('--gamma', help='Discount factor for discounting the reward', type=float, default=0.90)
+    parser = smac_parser()
+    # parser.add_argument('--gamma', help='Discount factor for discounting the reward', type=float, default=0.90)
     parser.add_argument('--batch_size', help='Batch size. Number of sampless drawn from buffer, which are used to update the model.',
                         type=int, default=50)
-    # parser.add_argument('--epsilon', help='Epsilon for epsilon-greedy policy', type=float, default=0.5)
-    # parser.add_argument('--epsilon_decay', help='Epsilon decay rate', type=float, default=0.995)
-    parser.add_argument('--lr', help='Learning Rate', type=float, default=5e-4)
-    parser.add_argument('--lrschedule', help='Learning Rate Decay Schedule',
-                        choices=['constant', 'linear', 'double_linear_con'], default='constant')
+    # parser.add_argument('--tau', help='Update rate of target netowrk', type=float, default=0.99)
+    # parser.add_argument('--lr', help='Learning Rate', type=float, default=5e-4)
     parser.add_argument('--buffer_size', help='Replay buffer size', type=int, default=int(5000))
-    parser.add_argument('--max_grad_norm', help='Maximum gradient norm up to which gradient is not clipped', type=float,
-                        default=0.01)
-    parser.add_argument('--update_interval', type=int, default=5,
-                        help='Frequency with which the network model is updated based on minibatch data.')
+    # parser.add_argument('--trace_length', help='Length of the traces obtained from the batched episodes', type=int,
+    #                     default=1)
+    parser.add_argument('--update_interval', type=int, default=5, help='Network parameters are updated after N real intercation with the environemnt')
+    #                     help='Frequency with which the network model is updated based on minibatch data.')
     return parser.parse_args()
 
 
@@ -73,10 +71,10 @@ def dqn_smac_wrapper(**params):
 
     logdir = params["logdir"]
 
-    dqn_output_dir = os.path.join(logdir, 'dqn_output' + str(params["instance_id"]))
+    dqn_output_dir = os.path.join(logdir, 'dqn_output{:02d}'.format(params["instance_id"]))
     if not os.path.isdir(dqn_output_dir):
         os.makedirs(dqn_output_dir)
-    smac_output_dir = os.path.join(logdir, 'smac3_output' + str(params["instance_id"]))
+    smac_output_dir = os.path.join(logdir, 'smac3_output{:02d}'.format(params["instance_id"]))
 
     # logdir = os.path.join(args.logdir, str(datetime.datetime.today()))
     # os.makedirs(logdir)
@@ -122,16 +120,29 @@ def dqn_smac_wrapper(**params):
 
     # Build configuration space and define all hyperparameters
     cs = ConfigurationSpace()
-    epsilon = UniformFloatHyperparameter("epsilon", 0.2, 1, default_value=0.6)                # initial epsilon
+    epsilon = UniformFloatHyperparameter("epsilon", 0.2, 0.9, default_value=0.6)                # initial epsilon
     epsilon_decay = UniformFloatHyperparameter("epsilon_decay", 0.2, 1, default_value=0.995)  # decay rate
-    # batch_size = UniformIntegerHyperparameter("batch_size", 5, 300, default_value=128)
-    # lr = UniformFloatHyperparameter("lr", 2e-5, 8e-3, default_value=5e-4)
-    units_shared_layer1 = UniformIntegerHyperparameter("units_layer1", 8, 256, default_value=64)
-    units_shared_layer2 = UniformIntegerHyperparameter("units_layer2", 1, 256, default_value=64)
-    units_policy_layer = UniformIntegerHyperparameter("units_layer3", 1, 256, default_value=64)
-    # gamma = UniformFloatHyperparameter("gamma", 0.7, 0.99, default_value=0.90)
-    cs.add_hyperparameters([units_shared_layer1, units_shared_layer2, units_policy_layer,
-                            epsilon, epsilon_decay])  # lr, batch_size, gamma,
+    lr = UniformFloatHyperparameter("lr", 0.0005, 0.01, default_value=0.005)
+    units_shared_layer1 = UniformIntegerHyperparameter("units_layer1", 8, 100, default_value=24)
+    units_shared_layer2 = UniformIntegerHyperparameter("units_layer2", 8, 100, default_value=24)
+    units_policy_layer = UniformIntegerHyperparameter("units_layer3", 8, 100, default_value=24)
+    activ_fcn = CategoricalHyperparameter("activ_fcn", ['relu6', 'elu', 'mixed'], default_value='relu6')
+    gamma = UniformFloatHyperparameter("gamma", 0.6, 0.90, default_value=0.80)
+    tau = UniformFloatHyperparameter("tau", 0.5, 1., default_value=0.7)
+    # update_interval = UniformIntegerHyperparameter("update_interval", 1, 300, default_value=50)
+    if params["architecture"] == 'lstm' or (params["architecture"] == 'gru'):
+        trace_length = UniformIntegerHyperparameter("trace_length", 1, 20, default_value=8)
+        # buffer_condition = LessThanCondition(child=trace_length, parent=params["buffer_size"])
+        # pa["batch_size"] = 5
+        cs.add_hyperparameters([units_shared_layer1, units_shared_layer2, units_policy_layer,
+                                epsilon, epsilon_decay, activ_fcn, lr, gamma, tau, trace_length])
+    else:
+        params.pop("batch_size")
+        batch_size = UniformIntegerHyperparameter("batch_size", 1, 100, default_value=30)
+        # buffer_condition = LessThanCondition(child=batch_size, parent=params["buffer_size"], value=33)
+        # InCondition(child=batch_size, value=33)
+        cs.add_hyperparameters([units_shared_layer1, units_shared_layer2, units_policy_layer,
+                                epsilon, epsilon_decay, activ_fcn, lr, gamma, tau, batch_size])
 
     # Create scenario object
     logger.info('##############################################')
@@ -177,13 +188,28 @@ def dqn_smac_wrapper(**params):
     with open(os.path.join(logdir, 'opt_hyperparams.txt'), 'a') as f:
         for k in optimized_cfg:
             f.write(str(k) + ': ' + str(optimized_cfg[k]) + '\n')
-        f.write("Optimized performance: %.2f" % optimized_performance)
+        f.write("Optimized performance: %.2f\n\n" % optimized_performance)
+
+    with open(os.path.join(logdir, 'opt_hyperparams.csv'), 'a') as f:
+        labels = []
+        for k in optimized_cfg:
+            labels.append(str(k))
+        labels.insert(0, 'performance')
+        labels.insert(0, 'instance_id')
+        writer = csv.DictWriter(f, fieldnames=labels)
+        if params["instance_id"] == 1:
+            writer.writeheader()
+        optimized_cfg._values["performance"] = optimized_performance
+        optimized_cfg._values["instance_id"] = params["instance_id"]
+        writer.writerow(optimized_cfg._values)
 
     return optimized_cfg
 
 def main():
     args = dqn_arg_parser()
     # print("rhs: " + str(args.run_parallel))
+    args.architecture = 'lstm'
+
     _ = dqn_smac_wrapper(**args.__dict__)
 
 if __name__ == '__main__':

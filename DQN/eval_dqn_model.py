@@ -9,102 +9,94 @@ from utils_OAI import set_global_seeds, normalize_obs, get_collection_rnn_state
 from run_ple_utils import make_ple_env
 
 
-def eval_model(render, nepisodes, **params):
+def eval_model(render, nepisodes, test_steps, save_traj=False, result_file='test_results.csv', **params):
     logger = logging.getLogger(__name__)
     logger.info('Evaluating learning algorithm...\n')
     logger.info(params["eval_model"])
 
     logger.debug('\nMake Environment with seed %s' % params["seed"])
+    # TODO use different seed for every run!#, allow_early_resets=True)
     # TODO make non-clipped env, even if agent is trained on clipped env
-    ple_env = make_ple_env(params["env"], seed=params["seed"])  # , allow_early_resets=True)
+    ple_env = make_ple_env(params["test_env"], seed=params["seed"])
 
     tf.reset_default_graph()
     set_global_seeds(params["seed"])
     model_idx = []
 
+    if save_traj:
+        result_path = os.path.join(params["logdir"], result_file)
+    else:
+        result_path = None
+
     recurrent = (params["architecture"] == 'lstm' or params["architecture"] == 'gru')
-
     if params["eval_model"] == 'final':
-        f = glob.glob(os.path.join(params["logdir"], 'final_model-*.meta'))
-        idx = f.find('final_model')
-        f_name = f[idx:-5]
-        model_idx.append(f_name)
-        with tf.Session() as sess:
-            OBS, RNN_S_IN, RNN_S_OUT, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name, isrnn=recurrent)
-            model_performance = run_episodes(sess, ple_env, nepisodes, 1000, render,
-                                             params["epsilon"], OBS, RNN_S_IN, RNN_S_OUT, PRED_Q)
-
-            # Add model performance metrics
-            avg_performances = np.mean(model_performance)
-            var_performances = np.var(model_performance)
-            maximal_returns = np.max(model_performance)
-
-        tf.reset_default_graph()
-
-    elif params["eval_model"] == 'all':
-        # Use all stored maximum performance models and the final model.
         avg_performances = []
         var_performances = []
         maximal_returns = []
-        iii = 0
+        for f in glob.glob(os.path.join(params["logdir"], '*final_model-*.meta')):
+            logger.info('Restore model: %s' % f)
+            idx = f.find('final_model')
+            f_name = f[idx:-5]
+            model_idx.append(f_name)
+            with tf.Session() as sess:
+                OBS, RNN_S_IN, RNN_S_OUT, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name,
+                                                                     isrnn=recurrent)
+                logger.info('Run %s evaluation episodes' % nepisodes)
+                model_performance = run_episodes(sess, ple_env, nepisodes, test_steps, render,
+                                                 OBS, RNN_S_IN, RNN_S_OUT, PRED_Q, result_path, params["seed"])
+                # Add model performance metrics
+                avg_performances.append(np.mean(model_performance))
+                var_performances.append(np.var(model_performance))
+                maximal_returns.append(np.max(model_performance))
+            tf.reset_default_graph()
+
+    elif params["eval_model"] == 'inter':
+        # Use all stored maximum performance models and the final model.
+        # print('Eval now!')
+        avg_performances = []
+        var_performances = []
+        maximal_returns = []
         for f in glob.glob(os.path.join(params["logdir"], '*inter*.meta')):
             logger.info('Restore model: %s' % f)
             idx = f.find('_model')
             f_name = f[idx-5:-5]
             model_idx.append(f_name)
             with tf.Session() as sess:
-                OBS, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name, isrnn=recurrent)
+                OBS, RNN_S_IN, RNN_S_OUT, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name,
+                                                                     isrnn=recurrent)
                 logger.info('Run %s evaluation episodes' % nepisodes)
-                model_performance = \
-                    run_episodes(sess, ple_env, nepisodes, 1000, render, params["epsilon"], OBS, PRED_Q)  # TODO 1000
+                model_performance = run_episodes(sess, ple_env, nepisodes, test_steps, render,
+                                                 OBS, RNN_S_IN, RNN_S_OUT, PRED_Q, result_path, params["seed"])
 
                 # Add model performance metrics
                 avg_performances.append(np.mean(model_performance))
                 var_performances.append(np.var(model_performance))
                 maximal_returns.append(np.max(model_performance))
             tf.reset_default_graph()
-    elif params["eval_model"] == "config":
+    elif params["eval_model"] == 'analysis':
         # Use all stored maximum performance models and the final model.
         avg_performances = []
-        var_performances = []
+        std_performances = []
         maximal_returns = []
-
-        # Setup log csv file
-        fieldnames = ['model']
-        for i in range(nepisodes):
-            fieldnames.append(('eps' + str(i)))
-        path = os.path.join(params["logdir"], 'results.csv')
-        with open(path, "w") as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(fieldnames)
-
-        # Run evaluation episodes
-        models = glob.glob(os.path.join(params["logdir"], '*config_model*.meta'))
-        models.sort()
-        for f in models:
+        for f in glob.glob(os.path.join(params["logdir"], '*.meta')):
             logger.info('Restore model: %s' % f)
-            idx = f.find('config_model')
-            f_name = f[idx:-5]
+            idx = f.find('_model')
+            f_name = f[idx - 5:-5]
             model_idx.append(f_name)
+            # print(f_name)
             with tf.Session() as sess:
-                OBS, RNN_S_IN, RNN_S_OUT, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name, isrnn=recurrent)
+                OBS, RNN_S_IN, RNN_S_OUT, PRED_Q = restore_dqn_model(sess, logdir=params["logdir"], f_name=f_name,
+                                                                     isrnn=recurrent)
                 logger.info('Run %s evaluation episodes' % nepisodes)
-                model_performance = run_episodes(sess, ple_env, nepisodes, 2000, render,
-                                                 params["epsilon"], OBS, RNN_S_IN, RNN_S_OUT, PRED_Q)  # TODO 1000
+                model_performance = run_episodes(sess, ple_env, nepisodes, test_steps, render,
+                                                 OBS, RNN_S_IN, RNN_S_OUT, PRED_Q, result_path, params["seed"])
 
                 # Add model performance metrics
                 avg_performances.append(np.mean(model_performance))
-                var_performances.append(np.var(model_performance))
+                std_performances.append(np.std(model_performance))
                 maximal_returns.append(np.max(model_performance))
             tf.reset_default_graph()
-
-            # Save episode information in csv file for further analysis.
-            # Each row contains nepisodes episodes using the current model "f_name".
-            with open(path, "a") as csvfile:  # TODO add real returns
-                writer = csv.writer(csvfile)
-                model_performance = [str(p) for p in model_performance]
-                model_performance.insert(0, f_name)
-                writer.writerow(model_performance)
+        return model_idx, avg_performances, std_performances
 
     logger.info(params["logdir"])
     logger.info('Results of the evaluation of the learning algorithm:')
@@ -114,18 +106,21 @@ def eval_model(render, nepisodes, **params):
     logger.info('Maximum episode return per model: %s' % maximal_returns)
     ple_env.close()
 
-    if len(avg_performances) > 0:
+    if not avg_performances == []:
         return np.mean(avg_performances), np.mean(var_performances), np.mean(maximal_returns)
     else:
-        return -5, 0, -5
+        return -3000, 3000, -3000
+
 
 def restore_dqn_model(sess, logdir, f_name, isrnn):
     sess.run(tf.global_variables_initializer())
     sess.run(tf.local_variables_initializer())
-    g = tf.get_default_graph()
+    # g = tf.get_default_graph()  # Shouldn't be set here again, as a new RNG is used without previous seeding.
 
     # restore the model
-    loader = tf.train.import_meta_graph(glob.glob(os.path.join(logdir, 'final_model-*.meta'))[0])
+    loader = tf.train.import_meta_graph(glob.glob(os.path.join(logdir, (f_name + '.meta')))[0])  #TODO !!!
+    # loader = tf.train.import_meta_graph(glob.glob(os.path.join(logdir, 'inter_model-*.meta'))[0])
+
     # now variables exist, but the values are not initialized yet.
     loader.restore(sess, os.path.join(logdir, f_name))  # restore values of the variables.
 
@@ -140,7 +135,7 @@ def restore_dqn_model(sess, logdir, f_name, isrnn):
     return obs_in, rnn_state_in, rnn_state_out, predQ_out
 
 
-def run_episodes(sess, env, n_eps, n_pipes, render, epsilon, obs_in, rnn_state_in, rnn_state_out, predQ_out):
+def run_episodes(sess, env, n_eps, n_steps, render, obs_in, rnn_state_in, rnn_state_out, predQ_out, f, seed):
     logger = logging.getLogger(__name__)
     ep_length = []
     ep_return = []
@@ -150,11 +145,22 @@ def run_episodes(sess, env, n_eps, n_pipes, render, epsilon, obs_in, rnn_state_i
         obs = normalize_obs(obs)
         done = False
         if rnn_state_in is not None:
-            rnn_s_in = (np.zeros(rnn_state_in[0].shape), np.zeros(rnn_state_in[1].shape))  # init rnn cell vector
+            if len(rnn_state_in) > 1:
+                rnn_s_in = (np.zeros(rnn_state_in[0].shape), np.zeros(rnn_state_in[1].shape))  # init lstm cell vector
+            else:
+                rnn_s_in = np.zeros(len(rnn_state_in))  # init gru cell vector
         total_return = 0
-        total_length = 0
+        total_length = -1
+        reward = 0
+        i_sample = 0
+        if f is not None:
+            rew_traj = []
 
-        while not done and (total_return < n_pipes):
+        while not done and (i_sample < n_steps):
+            i_sample += 1
+            total_length += 1
+            total_return += reward  # add reward of previous step, s.t. termination reward is not added anymore.
+
             if rnn_state_in is not None:
                 pQ, rnn_s_out = sess.run([predQ_out, rnn_state_out], feed_dict={obs_in[0]: [obs], rnn_state_in: rnn_s_in})
             else:
@@ -164,22 +170,29 @@ def run_episodes(sess, env, n_eps, n_pipes, render, epsilon, obs_in, rnn_state_i
             # obs, reward, done, _ = env.step(act[0][0])
             obs = normalize_obs(obs)
 
+            if f is not None:
+                rew_traj.append(reward)
+
             if render:
                 env.render()
 
-            total_length += 1
-            total_return += reward
             if rnn_state_in is not None:
                 rnn_s_in = rnn_s_out
         logger.info('Episode %s: %s, %s' % (i, total_return, total_length))
         ep_length.append(total_length)
         ep_return.append(total_return)
 
+        if f is not None:
+            with open(f, "a") as csvfile:
+                writer = csv.writer(csvfile)
+                rew_traj[0:0] = [seed, i, np.mean(rew_traj)]
+                writer.writerow(rew_traj)
+
     return ep_return
 
 
 if __name__ == '__main__':
-    logdir = "/home/mara/Desktop/logs/DQN/13579/dqn_output"
+    logdir = "/home/mara/Desktop/logs/A2C_OAI_NENVS/dqn_output2"
 
     logger = logging.getLogger()
     ch = logging.StreamHandler()  # Handler which writes to stderr (in red)
@@ -208,8 +221,9 @@ if __name__ == '__main__':
                 params[p_name] = float(p_val)
             except Exception:
                 params[p_name] = p_val[1:-1]
-    params["eval_model"] = 'config'
+    params["eval_model"] = 'all'
     params["logdir"] = logdir
+    params["architecture"] = 'lstm'
 
     # evaluate model
-    avg_perf, var_perf, max_return = eval_model(render=False, nepisodes=4, **params)
+    avg_perf, var_perf, max_return = eval_model(render=False, nepisodes=4, test_steps=3000, **params)
