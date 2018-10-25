@@ -26,7 +26,7 @@ def make_ple_envs(env_id, num_env, seed, start_index=0, *args, **kwargs):
             return env
         return _thunk
     set_global_seeds(seed)
-    return SubprocVecEnv([make_env(i + start_index) for i in range(num_env)])
+    return SubprocVecEnv([make_env(i + start_index) for i in range(num_env)], env_id)
 
 def make_ple_env(env_id, seed, **kwargs):
     env = gym.make(env_id)
@@ -38,33 +38,57 @@ def make_ple_env(env_id, seed, **kwargs):
 def arg_parser():
     import argparse
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--env', help='environment ID', default='FlappyBird-v1')
-    parser.add_argument('--test_env', help='testv environment ID', default='FlappyBird-v1')
-    # parser.add_argument('--nenvs', help='Number of environments', type=int, default=3)
-    # parser.add_argument('--policy', help='Policy architecture', choices=['mlp', 'casta', 'largemlp'],
-    #                     default='largemlp')
-    # parser.add_argument('--max_grad_norm', help='Maximum gradient norm up to which gradient is not clipped', type=float,
-    #                     default=0.01)
+    parser.add_argument('--architecture', help='Policy architecture', choices=['ff', 'lstm', 'gru'],
+                        default='ff')
+    # parser.add_argument('--activ_fcn', choices=['relu6', 'elu', 'mixed'], type=str, default='relu6',
+    #                     help='Activation functions of network layers', )
+
+    parser.add_argument('--env', help='environment ID', default='ContFlappyBird-v1')
+    parser.add_argument('--test_env', help='testv environment ID', default='ContFlappyBird-v3')
+    parser.add_argument('--total_timesteps', help='Total number of env steps', type=int, default=int(2e4))
+    parser.add_argument('--seed', help='RNG seed', type=int, default=1)
+    # TODO if lr and gamma are optimized, remove them here!
+    # parser.add_argument('--lr', help='Learning Rate', type=float, default=5e-4)
+    parser.add_argument('--max_grad_norm', type=float, default=0.01,
+                        help='Maximum gradient norm up to which gradient is not clipped', )
     # parser.add_argument('--gamma', help='Discount factor for discounting the reward', type=float, default=0.95)
-    parser.add_argument('--log_interval',
-                        help='parameter values stored in tensorboard summary every <log_interval> model update step. 0 --> no logging ',
-                        type=int, default=300)
-    parser.add_argument('--test_interval', help='Model is evaluated after <test_interval> model updates. 0 = do not evaluate while learning.', type=int,
-                        default=0) # TODO
-    parser.add_argument('--show_interval', help='Env is rendered every n-th episode. 0 = no rendering', type=int,
-                        default=0)
-    parser.add_argument('--logdir', help='directory where logs are stored',
-                        default='/home/mara/Desktop/logs/A2C_OAI_NENVS')
-    parser.add_argument('--seed', help='RNG seed', type=int, default=2)
-    parser.add_argument('--total_timesteps', help='Total number of env steps', type=int, default=int(1e3)) # TODO
-    parser.add_argument('--runcount_limit', help='amount of algorithm evaluations allowed to optimize hyperparameters',
-                        type=int, default=int(3))
-    parser.add_argument('--eval_model', help='Eval all stored models, only the final model or only the intermediately stored models (while testing the best algorithm configs)', choices=['all', 'final'],
-                        default='all') # TODO remove config option
-    parser.add_argument('--run_parallel', help='flag which determines whether smac instances are run in parallel or not.', choices=["True", "true", "False", "false"], type=str, default="false")
-    parser.add_argument('--instance_id', help='id of the smac instance', type=int, default=1)
-    parser.add_argument('--keep_model', help='Whether or not to keep all saved inter_models.', type=int, default=0)
-    parser.add_argument('--activ_fcn', help='Activation functions of network layers', choices=['relu6', 'elu', 'mixed'], type=str, default='relu6')
+    # parser.add_argument('--batch_size', type=int, default=50,
+    #                     help='number of samples based on which gradient is updated', )
+
+    parser.add_argument('--log_interval', type=int, default=20,
+                        help='Network parameter values are stored in tensorboard summary every <log_interval> model update step. 0 --> no logging ')
+    parser.add_argument('--show_interval', type=int, default=1,
+                        help='Env is rendered every n-th episode. 0 = no rendering')
+    parser.add_argument('--logdir', default='/home/mara/Desktop/logs/A2C_OAI_NENVS',
+                        help='directory where logs are stored')
+    parser.add_argument('--eval_model', choices=['all', 'inter', 'final'], default='inter',
+                        help='Eval all stored models, only the final model or only the intermediately stored models (while testing the best algorithm configs)')
+    parser.add_argument('--keep_model', help='How many best models shall be kept during training. 0 -> only final model', type=int, default=2)
+
+    # For configuration validation.
+    parser.add_argument('--test_interval', type=int, default=0,
+                        help='Model is evaluated after <test_interval> model updates. 0 = do not evaluate while learning.')
+    return parser
+
+def smac_parser():
+    parser = arg_parser()
+    parser.add_argument('--runcount_limit', type=int, default=int(4),
+                        help='amount of algorithm evaluations allowed to optimize hyperparameters')
+    parser.add_argument('--run_parallel', choices=["True", "true", "False", "false"], type=str, default="false",
+                        help='flag which determines whether smac instances are run in parallel or not.')
+    parser.add_argument('--instance_id', help='id of the smac instance', type=int, default=3)
+    parser.add_argument('--early_stop', help='stop bad performing runs ealier', type=bool, default=True)
+    return parser
+
+def bohb_parser():
+    parser = arg_parser()
+    parser.add_argument('--instance_id', help='unique id to identify the HPB run. id = [0, s_max]', type=str, default=1)
+    parser.add_argument('--array_id', help='resource manager array id to treat one job as a HPB run.', default=1, type=int)
+    parser.add_argument('--nic_name', help='name of the Network Interface Card', default='boot0', type=str)
+    parser.add_argument('--min_resource', help='minimum resource in terms of interactions with the env.', default=32, type=int)
+    parser.add_argument('--max_resource', help='maximum resource in terms of interactions with the env.', default=512, type=int)
+    parser.add_argument('--early_stop', help='stop bad performing runs ealier', type=bool, default=False)
+    # parser.add_argument('--host', help='Host Ip adress', type=str)
     return parser
 
 class ParamDict():
@@ -109,30 +133,28 @@ class ParamDict():
 
 def params_parser():
     paramDict = ParamDict()
-    paramDict.add_cat_param("env", options=['FlappyBird-v1', 'FlappyBird-v2', 'FlappyBird-v3', 'FlappyBird-v4'], default='FlappyBird-v1', dtype=str)
-    paramDict.add_cat_param("test_env", options=['FlappyBird-v1', 'FlappyBird-v2', 'FlappyBird-v3', 'FlappyBird-v4'], default='FlappyBird-v1', dtype=str)
+    paramDict.add_cat_param("architecture", options=['ff', 'lstm', 'gru'], default='ff', dtype=str)
+    paramDict.add_cat_param("activ_fcn", options=['relu6', 'elu', 'mixed'], default='relu6', dtype=str)
+    paramDict.add_cat_param("env", options=['FlappyBird-v1', 'FlappyBird-v2', 'FlappyBird-v3', 'FlappyBird-v4', 'ContFlappyBird-v1', 'ContFlappyBird-v2', 'ContFlappyBird-v3', 'ContFlappyBird-v4'], default='FlappyBird-v1', dtype=str)
+    paramDict.add_cat_param("test_env", options=['FlappyBird-v1', 'FlappyBird-v2', 'FlappyBird-v3', 'FlappyBird-v4', 'ContFlappyBird-v1', 'ContFlappyBird-v2', 'ContFlappyBird-v3', 'ContFlappyBird-v4'], default='FlappyBird-v1', dtype=str)
     paramDict.add_num_param("total_timesteps", lb=0, ub=10e15, default=int(10e3), dtype=int)
     paramDict.add_num_param("seed", lb=0, ub=np.inf, default=123, dtype=int)
-    # paramDict.add_cat_param("policy", options=['mlp', 'casta', 'largemlp'], default='largemlp', dtype=str)
-    # paramDict.add_num_param("nenvs", lb=1, ub=16, default=3, dtype=int)
-    # paramDict.add_num_param("nsteps", lb=1, ub=100, default=50, dtype=int)
-    # paramDict.add_num_param("vf_coeff", lb=1e-2, ub=0.4, default=0.2, dtype=float)
-    # paramDict.add_num_param("ent_coeff", lb=1e-9, ub=1e-2, default=1e-7, dtype=float)
-    # paramDict.add_num_param("gamma", lb=0.5, ub=0.99, default=0.90, dtype=float)
-    # paramDict.add_num_param("lr", lb=1e-9, ub=1e-2, default=5e-4, dtype=float)
-    # paramDict.add_cat_param("lrschedule", options=['constant', 'linear', 'double_linear_con'], default='constant',
-    #                         dtype=str)
-    # paramDict.add_num_param("max_grad_norm", lb=0.001, ub=20, default=0.01, dtype=float)
-    # paramDict.add_num_param("units_shared_layer1", lb=8, ub=260, default=64, dtype=int),
-    # paramDict.add_num_param("units_shared_layer2", lb=8, ub=260, default=64, dtype=int),
-    # paramDict.add_num_param("units_policy_layer", lb=8, ub=260, default=64, dtype=int),
+
+    paramDict.add_num_param("lr", lb=1e-12, ub=1., default=5e-4, dtype=float)
+    paramDict.add_num_param("max_grad_norm", lb=0.001, ub=20, default=0.01, dtype=float)
+    paramDict.add_num_param("gamma", lb=0.01, ub=1., default=0.90, dtype=float)
+    paramDict.add_num_param("batch_size", lb=1, ub=500, default=50, dtype=int)
+
     paramDict.add_num_param("log_interval", lb=0, ub=1e7, default=100, dtype=int)
-    paramDict.add_num_param("test_interval", lb=0, ub=1e7, default=0, dtype=int)
     paramDict.add_num_param("show_interval", lb=0, ub=1e7, default=0, dtype=int)
     paramDict.add_cat_param("logdir", options=None, default='/home/mara/Desktop/logs/A2C_OAI_NENVS', dtype=str)
     paramDict.add_cat_param("eval_model", options=['all', 'final', 'inter'], default='all', dtype=str)
-    paramDict.add_num_param("keep_model", lb=0, ub=50, default=7, dtype=int)  # 'Whether or not to keep all saved inter_models. 0 -> keep all
-    paramDict.add_cat_param("activ_fcn", options=['relu6', 'elu', 'mixed'], default='relu6', dtype=str)
+    paramDict.add_cat_param("early_stop", options=[True, False], default=False, dtype=bool)
+    paramDict.add_num_param("keep_model", lb=0, ub=500, default=2, dtype=int)
+
+    # For configuration validation.
+    paramDict.add_num_param("test_interval", lb=0, ub=1e7, default=0, dtype=int)
+
     return paramDict  # .check_params(**kwargs)
 
 

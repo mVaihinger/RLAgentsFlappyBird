@@ -50,19 +50,55 @@ def get_collection_rnn_state(name):
     coll_of_names = tf.get_collection(name + '__names__')
     idx = 0
     for n in coll_of_names:
-        try:
-            if 'LSTMStateTuple' in n:
-                state = tf.nn.rnn_cell.LSTMStateTuple(coll[idx], coll[idx+1])
-                idx += 2
-            else:  # add more cell types here
-                state = coll[idx]
-                idx += 1
-        except TypeError:
-            # else:  # add more cell types here
+        if 'LSTMStateTuple' in n:
+            state = tf.nn.rnn_cell.LSTMStateTuple(coll[idx], coll[idx+1])
+            idx += 2
+        else:  # add more cell types here
             state = coll[idx]
             idx += 1
         layers.append(state)
     return tuple(layers)
+
+def add_to_collection_rnn_state(name, rnn_state):
+    # store the name of each cell type in a different collection
+    coll_of_names = name + '__names__'
+    try:
+        for layer in rnn_state:
+            n = layer.__class__.__name__
+            tf.add_to_collection(coll_of_names, n)
+            try:
+                for l in layer:
+                    tf.add_to_collection(name, l)
+            except TypeError:
+                # layer is not iterable so just add it directly
+                tf.add_to_collection(name, layer)
+    except TypeError:
+        # layer is not iterable so just add it directly
+        tf.add_to_collection(name, rnn_state)
+
+
+def get_collection_rnn_state(name):
+    layers = []
+    coll = tf.get_collection(name)
+    coll_of_names = tf.get_collection(name + '__names__')
+    idx = 0
+    if coll_of_names == []:
+        layers.append(coll[0])
+    else:
+        for n in coll_of_names:
+            try:
+                if 'LSTMStateTuple' in n:
+                    state = tf.nn.rnn_cell.LSTMStateTuple(coll[idx], coll[idx+1])
+                    idx += 2
+                else:  # add more cell types here
+                    state = coll[idx]
+                    idx += 1
+            except TypeError:
+                # else:  # add more cell types here
+                state = coll[idx]
+                idx += 1
+            layers.append(state)
+        return tuple(layers)
 
 def make_session(num_cpu=None, make_default=False):
     """Returns a session that will use <num_cpu> CPU's only"""
@@ -426,13 +462,36 @@ def explained_variance(ypred,y):
 
 
 def normalize_obs(obs):
+    # obs_len = len(obs)
     scaling_values = [512, 7, 512, 512, 512, 512, 512, 512]
+    # if obs_len > 8:  # (nfeat,)
+    #     n_randfeat = obs_len - 8
+    #     for i in range(n_randfeat):
+    #         scaling_values.append(512)  # random feature is already scaled to be within 0 and 1.
+    # elif len(obs[0]) > 8:  # (nenvs, nfeat,)
+    #     n_randfeat = len(obs[0]) - 8
+    #     for i in range(n_randfeat):
+    #         scaling_values.append(512)  # random feature is already scaled to be within 0 and 1.
+
+    # Observations from single Env
     if len(obs.shape) == 1:
-        obs = [obs[j] / scaling_values[j] for j in range(len(obs))]
-    else:
+        obs_len = len(obs)
+        if obs_len > 8:  # (nfeat,)
+            n_randfeat = obs_len - 8
+            for i in range(n_randfeat):
+                scaling_values.append(512)  # random feature is already scaled to be within 0 and 1.
+        obs = [obs[j] / scaling_values[j] for j in range(obs_len)]
+
+    else:  # Obs from multiple envs
+        obs_len = len(obs[0])
+        if obs_len > 8:  # (nfeat,)
+            n_randfeat = obs_len - 8
+            for i in range(n_randfeat):
+                scaling_values.append(512)  # random feature is already scaled to be within 0 and 1.
+
         for i in range(len(obs)):
-            obs[i] = [obs[i,j] / scaling_values[j] for j in range(len(obs[i]))]
-    return np.asarray(obs)  # TODO check whether other code works with this line
+            obs[i] = [obs[i,j] / scaling_values[j] for j in range(obs_len)]
+    return np.asarray(obs)
 
 
 # -----------------------------------------------------------------------------
@@ -500,7 +559,7 @@ class ReplayBuffer:
 
     def recent_and_next_batch(self, batch_size):
         # Draw batch_sze/2 random samples
-        n_batched = int(batch_size / 2)
+        n_batched = batch_size//2
         batch_indices = np.random.choice(len(self._data.obs), n_batched)  # TODO prioritized experience replay
         batch_obs = np.array([self._data.obs[i] for i in batch_indices])
         batch_actions = np.array([self._data.actions[i] for i in batch_indices])
@@ -511,12 +570,13 @@ class ReplayBuffer:
 
         # Take batch_size/2 recent samples and add them to mini batch
         buffer_length = self.size()
-        batch_obs = np.concatenate((batch_obs, self._data.obs[buffer_length-n_batched:]))
-        batch_actions = np.concatenate((batch_actions, self._data.actions[buffer_length-n_batched:]))
-        batch_next_obs = np.concatenate((batch_next_obs, self._data.next_obs[buffer_length-n_batched:]))
-        batch_rewards = np.concatenate((batch_rewards, self._data.rewards[buffer_length-n_batched:]))
-        batch_values = np.concatenate((batch_values, self._data.values[buffer_length-n_batched:]))
-        batch_dones = np.concatenate((batch_dones, self._data.dones[buffer_length-n_batched:]))
+        n_recent = batch_size - n_batched
+        batch_obs = np.concatenate((batch_obs, self._data.obs[buffer_length-n_recent:]))
+        batch_actions = np.concatenate((batch_actions, self._data.actions[buffer_length-n_recent:]))
+        batch_next_obs = np.concatenate((batch_next_obs, self._data.next_obs[buffer_length-n_recent:]))
+        batch_rewards = np.concatenate((batch_rewards, self._data.rewards[buffer_length-n_recent:]))
+        batch_values = np.concatenate((batch_values, self._data.values[buffer_length-n_recent:]))
+        batch_dones = np.concatenate((batch_dones, self._data.dones[buffer_length-n_recent:]))
 
         # batch_states = np.array([self._data.states[i] for i in batch_indices]).squeeze()
         return batch_obs, batch_actions, batch_next_obs, batch_rewards, batch_values, batch_dones  #, batch_states
@@ -618,7 +678,14 @@ def update_target_graph(train_vars,tau):
     nvars = len(train_vars)
     op_holder = []
     for idx, var in enumerate(train_vars[0:nvars//2]):
-        a = (var.value()*tau)
-        b = ((1-tau)*train_vars[idx+nvars//2].value())
-        op_holder.append(train_vars[idx+nvars//2].assign(a + b))
+        new_var = var.value()  # values of train_network
+        target_var = train_vars[idx+nvars//2].value()  # values of target network
+        op_holder.append(train_vars[idx+nvars//2].assign((tau*new_var) + ((1-tau)*target_var)))
     return op_holder
+
+
+# def reset_model(train_vars, train_vars_values):
+#     op_holder=[]
+#     for var, val in zip(train_vars, train_vars_values):
+#         op_holder.append(var.assign(val))
+#     return op_holder
