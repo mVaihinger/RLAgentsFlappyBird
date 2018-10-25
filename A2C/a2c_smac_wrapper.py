@@ -1,5 +1,6 @@
 import logging
 import numpy as np
+import csv
 from smac.configspace import ConfigurationSpace
 from ConfigSpace.hyperparameters import CategoricalHyperparameter, \
     UniformFloatHyperparameter, \
@@ -18,23 +19,23 @@ print(os.path.dirname(sys.path[0]))
 sys.path.append(os.path.dirname(sys.path[0]))
 
 from A2C.run_a2c import run_a2c_smac
-from run_ple_utils import arg_parser
+from run_ple_utils import smac_parser
 
 # TODO check whether normal run works
 
 # check whether parallel run works
 
 def a2c_arg_parser():
-    parser = arg_parser()
+    parser = smac_parser()
     parser.add_argument('--nenvs', help='Number of environments', type=int, default=3)
-    parser.add_argument('--nsteps', help='n environment steps per train update', type=int, default=50)
-    parser.add_argument('--lr', help='Learning Rate', type=float, default=5e-4)
-    parser.add_argument('--lrschedule', help='Learning Rate Decay Schedule', choices=['constant', 'linear', 'double_linear_con'], default='constant')
-    parser.add_argument('--policy', help='Policy architecture', choices=['mlp', 'casta', 'largemlp', 'lstm'],
-                        default='lstm')
-    parser.add_argument('--max_grad_norm', help='Maximum gradient norm up to which gradient is not clipped', type=float,
-                        default=0.01)
-    parser.add_argument('--gamma', help='Discount factor for discounting the reward', type=float, default=0.95)
+
+    # TODO comment all variables which shall be optmized. They will be set by the SMAC agent.
+    # parser.add_argument('--lr', help='Learning Rate', type=float, default=5e-4)
+    parser.add_argument('--batch_size', type=int, default=50,
+                        help='number of samples based on which gradient is updated', )
+    # parser.add_argument('--activ_fcn', choices=['relu6', 'elu', 'mixed'], type=str, default='relu6',
+    #                     help='Activation functions of network layers', )
+    # parser.add_argument('--gamma', help='Discount factor for discounting the reward', type=float, default=0.95)
     return parser.parse_args()
 
 
@@ -43,10 +44,10 @@ def a2c_smac_wrapper(**params):
     # os.makedirs(logdir)
     logdir = params["logdir"]
 
-    a2c_output_dir = os.path.join(logdir, 'a2c_output' + str(params["instance_id"]))
+    a2c_output_dir = os.path.join(logdir, 'a2c_output{:02d}'.format(params["instance_id"]))
     if not os.path.isdir(a2c_output_dir):
         os.makedirs(a2c_output_dir)
-    smac_output_dir = os.path.join(logdir, 'smac3_output' + str(params["instance_id"]))
+    smac_output_dir = os.path.join(logdir, 'smac3_output{:02d}'.format(params["instance_id"]))
 
     def a2c_from_cfg(cfg):
         """ Creates the A2C algorithm based on the given configuration.
@@ -87,16 +88,17 @@ def a2c_smac_wrapper(**params):
 
     # Build configuration space and define all hyperparameters
     cs = ConfigurationSpace()
-    # nsteps = UniformIntegerHyperparameter("nsteps", 20, 60, default_value=50)
-    # lr = UniformFloatHyperparameter("lr", 2e-5, 8e-3, default_value=5e-4)
-    units_shared_layer1 = UniformIntegerHyperparameter("units_shared_layer1", 8, 400, default_value=30)
-    units_shared_layer2 = UniformIntegerHyperparameter("units_shared_layer2", 8, 400, default_value=100)
-    units_policy_layer = UniformIntegerHyperparameter("units_policy_layer", 8, 400, default_value=100)
-    vf_coeff = UniformFloatHyperparameter("vf_coeff", 5e-3, 0.6, default_value=0.2)
-    ent_coeff = UniformFloatHyperparameter("ent_coeff", 8e-9, 1e-6, default_value=1e-7)
-    # gamma = UniformFloatHyperparameter("gamma", 0.7, 0.99, default_value=0.90)
+    # batch_size = UniformIntegerHyperparameter("batch_size", 5, 60, default_value=50)
+    lr = UniformFloatHyperparameter("lr", 1e-4, 1e-2, default_value=1e-3)
+    units_shared_layer1 = UniformIntegerHyperparameter("units_shared_layer1", 8, 100, default_value=24)
+    units_shared_layer2 = UniformIntegerHyperparameter("units_shared_layer2", 8, 100, default_value=24)
+    units_policy_layer = UniformIntegerHyperparameter("units_policy_layer", 8, 100, default_value=24)
+    vf_coeff = UniformFloatHyperparameter("vf_coeff", 1e-2, 0.5, default_value=0.1)
+    ent_coeff = UniformFloatHyperparameter("ent_coeff", 5e-6, 1e-4, default_value=1e-5)
+    gamma = UniformFloatHyperparameter("gamma", 0.6, 1., default_value=0.90)
+    activ_fcn = CategoricalHyperparameter("activ_fcn", ['relu6', 'elu', 'mixed'], default_value='relu6')
     cs.add_hyperparameters([units_shared_layer1, units_shared_layer2, units_policy_layer,
-                             vf_coeff, ent_coeff]) # , gamma, nsteps, lr, ])
+                            vf_coeff, ent_coeff, gamma, lr, activ_fcn])  # batch_size
 
     # Create scenario object
     logger.info('Create scenario object')
@@ -140,13 +142,29 @@ def a2c_smac_wrapper(**params):
     with open(os.path.join(logdir, 'opt_hyperparams.txt'), 'a') as f:
         for k in optimized_cfg:
             f.write(str(k) + ': ' + str(optimized_cfg[k]) + '\n')
-        f.write("Optimized performance: %.2f" % optimized_performance)
+        f.write("Optimized performance: %.2f\n\n" % optimized_performance)
+
+    with open(os.path.join(logdir, 'opt_hyperparams.csv'), 'a') as f:
+        labels = []
+        for k in optimized_cfg:
+            labels.append(str(k))
+        labels.insert(0, 'performance')
+        labels.insert(0, 'instance_id')
+        writer = csv.DictWriter(f, fieldnames=labels)
+        if params["instance_id"] == 1:
+            writer.writeheader()
+        optimized_cfg._values["performance"] = optimized_performance
+        optimized_cfg._values["instance_id"] = params["instance_id"]
+        writer.writerow(optimized_cfg._values)
 
     return optimized_cfg
 
 
 def main():
     args = a2c_arg_parser()
+    args.architecture = 'gru'
+    # args.env = 'ContFlappyBird-v1'
+    # args.test_env = 'ContFlappyBird-v1'
     # print("rhs: " + str(args.run_parallel))
     _ = a2c_smac_wrapper(**args.__dict__)
 

@@ -1,41 +1,53 @@
-from run_ple_utils import make_ple_envs, make_ple_env
 import tensorflow as tf
 import os, glob
 import csv
 import numpy as np
 import logging
-import datetime
+# import datetime
 
-from utils_OAI import set_global_seeds, normalize_obs
+from utils_OAI import set_global_seeds, normalize_obs, get_collection_rnn_state
+from run_ple_utils import make_ple_env
 
-def eval_model(render, nepisodes, **params):
+
+def eval_model(render, nepisodes, test_steps, save_traj=False, result_file='test_results.csv', **params):
     logger = logging.getLogger(__name__)
     logger.info('Evaluating learning algorithm...\n')
     logger.info(params["eval_model"])
 
     logger.debug('\nMake Environment with seed %s' % params["seed"])
-    ple_env = make_ple_env(params["env"], seed=params["seed"]) # TODO use different seed for every run!#, allow_early_resets=True)
+    ple_env = make_ple_env(params["test_env"], seed=params["seed"])  # TODO alwys use the same random seed here!
 
     tf.reset_default_graph()
-    set_global_seeds(params["seed"])#
+    set_global_seeds(params["seed"])
     model_idx = []
-    print(params["logdir"])
 
+    if save_traj:
+        result_path = os.path.join(params["logdir"], result_file)
+    else:
+        result_path = None
+
+    recurrent = (params["architecture"] == 'lstm' or params["architecture"] == 'gru')
     if params["eval_model"] == 'final':
-        f = glob.glob(os.path.join(params["logdir"], 'final_model-*.meta'))
-        idx = f.find('final_model')
-        f_name = f[idx:-5]
-        model_idx.append(f_name)
-        with tf.Session() as sess:
-            OBS, PI, PI_LOGITS, pred_ac_op, pred_vf_op = restore_model(sess, logdir=params["logdir"], f_name=f_name)
-            model_performance = \
-                run_episodes(sess, ple_env, nepisodes, 1000, render, OBS, PI, PI_LOGITS, pred_ac_op)
-            avg_performances = np.mean(model_performance)
-            var_performances = np.var(model_performance)
-            maximal_returns = np.max(model_performance)
-        tf.reset_default_graph()
+        avg_performances = []
+        var_performances = []
+        maximal_returns = []
+        for f in glob.glob(os.path.join(params["logdir"], '*final_model-*.meta')):
+            logger.info('Restore model: %s' % f)
+            idx = f.find('final_model')
+            f_name = f[idx:-5]
+            model_idx.append(f_name)
+            with tf.Session() as sess:
+                OBS, PI, PI_LOGITS, RNN_S_IN, RNN_S_OUT, pred_ac_op, pred_vf_op = restore_a2c_model(sess, logdir=params["logdir"], f_name=f_name, isrnn=recurrent)
+                model_performance = run_episodes(sess, ple_env, nepisodes, test_steps, render,
+                                                 OBS, PI, PI_LOGITS, RNN_S_IN, RNN_S_OUT, pred_ac_op, result_path, params["seed"])
 
-    elif params["eval_model"] == 'all':
+                # Add model performance metrics
+                avg_performances = np.mean(model_performance)
+                var_performances = np.var(model_performance)
+                maximal_returns = np.max(model_performance)
+            tf.reset_default_graph()
+
+    elif params["eval_model"] == 'inter':
         # Use all stored maximum performance models and the final model.
         avg_performances = []
         var_performances = []
@@ -45,12 +57,13 @@ def eval_model(render, nepisodes, **params):
             idx = f.find('_model')
             f_name = f[idx-5:-5]
             model_idx.append(f_name)
-            print(f_name)
             with tf.Session() as sess:
-                OBS, PI, PI_LOGITS, pred_ac_op, pred_vf_op = restore_model(sess, logdir=params["logdir"], f_name=f_name)
+                OBS, PI, PI_LOGITS, RNN_S_IN, RNN_S_OUT, pred_ac_op, pred_vf_op = \
+                    restore_a2c_model(sess, logdir=params["logdir"], f_name=f_name, isrnn=recurrent)
                 logger.info('Run %s evaluation episodes' % nepisodes)
                 model_performance = \
-                    run_episodes(sess, ple_env, nepisodes, 1000, render, OBS, PI, PI_LOGITS, pred_ac_op)
+                    run_episodes(sess, ple_env, nepisodes, test_steps, render,
+                                 OBS, PI, PI_LOGITS, RNN_S_IN, RNN_S_OUT, pred_ac_op, result_path, params["seed"])
 
                 # Add model performance metrics
                 avg_performances.append(np.mean(model_performance))
@@ -69,10 +82,11 @@ def eval_model(render, nepisodes, **params):
             model_idx.append(f_name)
             print(f_name)
             with tf.Session() as sess:
-                OBS, PI, PI_LOGITS, pred_ac_op, pred_vf_op = restore_model(sess, logdir=params["logdir"], f_name=f_name)
+                OBS, PI, PI_LOGITS, RNN_S_IN, RNN_S_OUT, pred_ac_op, pred_vf_op = \
+                    restore_a2c_model(sess, logdir=params["logdir"], f_name=f_name, isrnn=recurrent)
                 logger.info('Run %s evaluation episodes' % nepisodes)
-                model_performance = \
-                    run_episodes(sess, ple_env, nepisodes, 400, render, OBS, PI, PI_LOGITS, pred_ac_op)
+                model_performance = run_episodes(sess, ple_env, nepisodes, test_steps, render,
+                                                 OBS, PI, PI_LOGITS, RNN_S_IN, RNN_S_OUT, pred_ac_op, result_path, params["seed"])
 
                 # Add model performance metrics
                 avg_performances.append(np.mean(model_performance))
@@ -117,29 +131,30 @@ def eval_model(render, nepisodes, **params):
     #             model_performance = [str(p) for p in model_performance]
     #             model_performance.insert(0, f_name)
     #             writer.writerow(model_performance)
-    #
+
+    logger.info(params["logdir"])
     logger.info('Results of the evaluation of the learning algorithm:')
     logger.info('Restored models: %s' % model_idx)
     logger.info('Average performance per model: %s' % avg_performances)
     logger.info('Performance variance per model: %s' % var_performances)
-    logger.info('Maximum episode return per model: %s' % maximal_returns)
-
+    logger.info('Maximum episode return per model: %s\n' % maximal_returns)
     ple_env.close()
 
-    if len(avg_performances) > 0:
+    if not avg_performances == []:
         return np.mean(avg_performances), np.mean(var_performances), np.mean(maximal_returns)
     else:
-        return -5, 0, -5
+        return -3000, 3000, -3000
 
 
-def restore_model(sess, logdir, f_name):
+def restore_a2c_model(sess, logdir, f_name, isrnn):
     sess.run(tf.global_variables_initializer())
     sess.run(tf.local_variables_initializer())
-    g = tf.get_default_graph()
+    # g = tf.get_default_graph()  # Shouldn't be set here again, as a new RNG is used without previous seeding.
 
     # restore the model
-    # loader = tf.train.import_meta_graph(glob.glob(os.path.join(logdir, 'final_model-*.meta'))[0])  #TODO !!!
-    loader = tf.train.import_meta_graph(glob.glob(os.path.join(logdir, 'inter_model-*.meta'))[0])
+    loader = tf.train.import_meta_graph(glob.glob(os.path.join(logdir, (f_name + '.meta')))[0])
+    # loader = tf.train.import_meta_graph(glob.glob(os.path.join(logdir, 'final_model-*.meta'))[0])
+    # loader = tf.train.import_meta_graph(glob.glob(os.path.join(logdir, 'inter_model-*.meta'))[0])
 
     # now variables exist, but the values are not initialized yet.
     loader.restore(sess, os.path.join(logdir, f_name))  # restore values of the variables.
@@ -150,39 +165,69 @@ def restore_model(sess, logdir, f_name):
     pi_logits_out = tf.get_collection('pi_logit')
     predict_vf_op = tf.get_collection('val')
     predict_ac_op = tf.get_collection('step')
-    return obs_in, probs_out, pi_logits_out, predict_ac_op, predict_vf_op
+    if isrnn:
+        rnn_state_in = get_collection_rnn_state('state_in')  # rnn cell input vector
+        rnn_state_out = get_collection_rnn_state('state_out')  # rnn cell output vector
+    else:
+        rnn_state_in, rnn_state_out = None, None
+    return obs_in, probs_out, pi_logits_out, rnn_state_in, rnn_state_out, predict_ac_op, predict_vf_op
 
 
-def run_episodes(sess, env, n_eps, n_pipes, render, obs_in, pi_out, pi_logits_out, predict_ac_op):
+def run_episodes(sess, env, n_eps, n_steps, render, obs_in, pi_out, pi_logits_out, rnn_state_in, rnn_state_out, predict_ac_op,f, seed):
     logger = logging.getLogger(__name__)
     ep_length = []
     ep_return = []
-
-    for i in range(0, n_eps): # TODO parallelize this here!
+    logger.info('---------------- Episode results -----------------------')
+    for i in range(0, n_eps):  # TODO parallelize this here! Problem: guarantee same sequence of random numbers in each parallel process. --> Solution Index based RNG instead of sequential seed based RNG
         obs = env.reset()
         obs = normalize_obs(obs)
         done = False
+        if rnn_state_in is not None:
+            if len(rnn_state_in) > 1:
+                rnn_s_in = (np.zeros(rnn_state_in[0].shape), np.zeros(rnn_state_in[1].shape))  # init lstm cell vector
+            else:
+                rnn_s_in = np.zeros(len(rnn_state_in))  # init gru cell vector
         total_return = 0
-        total_length = 0
+        total_length = -1
+        reward = 0
+        i_sample = 0
+        if f is not None:
+            rew_traj = []
 
-        while not done and (total_return < n_pipes):
-            pi, pi_log, act = sess.run([pi_out, pi_logits_out, predict_ac_op], feed_dict={obs_in[0]: [obs]})
+        while not done and (i_sample < n_steps):
+            i_sample += 1
+            total_length += 1
+            total_return += reward  # add reward of previous step, s.t. termination reward is not added anymore.
+
+            if rnn_state_in is not None:
+                pi, pi_log, act, rnn_s_out = sess.run([pi_out, pi_logits_out, predict_ac_op, rnn_state_out], feed_dict={obs_in[0]: [obs], rnn_state_in: rnn_s_in})
+            else:
+                pi, pi_log, act = sess.run([pi_out, pi_logits_out, predict_ac_op], feed_dict={obs_in[0]: [obs]})
             ac = np.argmax(pi_log)
             obs, reward, done, _ = env.step(ac)
             # obs, reward, done, _ = env.step(act[0][0])
             obs = normalize_obs(obs)
 
+            if f is not None:
+                rew_traj.append(reward)
+
             if render:
                 env.render()
 
-            total_length += 1
-            total_return += reward
-        # logger.debug('*****************************************')
+            if rnn_state_in is not None:
+                rnn_s_in = rnn_s_out
         logger.info('Episode %s: %s, %s' % (i, total_return, total_length))
         ep_length.append(total_length)
         ep_return.append(total_return)
 
+        if f is not None:
+            with open(f, "a") as csvfile:
+                writer = csv.writer(csvfile)
+                rew_traj[0:0] = [seed, i, np.mean(rew_traj)]
+                writer.writerow(rew_traj)
+
     return ep_return
+
 
 if __name__ == '__main__':
     logdir = "/home/mara/Desktop/logs/A2C_OAI_NENVS/a2c_output"
@@ -214,8 +259,10 @@ if __name__ == '__main__':
                 params[p_name] = float(p_val)
             except Exception:
                 params[p_name] = p_val[1:-1]
-    params["eval_model"] = 'config'
+    params["eval_model"] = 'all'
     params["logdir"] = logdir
+    params["test_env"] = 'FlappyBird-v3'
+    params["architecture"] = 'ff'
 
     # evaluate model
     avg_perf, var_perf, max_return = eval_model(render=False, nepisodes=4, **params)
