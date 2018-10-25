@@ -16,7 +16,7 @@ import time
 # TODO remove hard coded non-stationarity params
 
 
-PIPE_GAP = 200
+PIPE_GAP = 90
 
 
 def process_state(state):
@@ -26,7 +26,7 @@ def process_state(state):
 class PLEEnv_state(gym.Env):
     metadata = {'render.modes': ['human', 'rgb_array']}
 
-    def __init__(self, game_name='FlappyBird', display_screen=True, nonstationary=False):
+    def __init__(self, game_name='FlappyBird', display_screen=True, nonstationary=False, nrandfeatures=0):
         # set headless mode
         os.environ['SDL_VIDEODRIVER'] = 'dummy'
 
@@ -43,19 +43,33 @@ class PLEEnv_state(gym.Env):
         if game_name == 'FlappyBird':
             self.observation_space = gspc.Box(low=-np.inf, high=np.inf, shape=(8,), dtype=np.float32)
         else:
-            self.observation_space = gspc.Box(low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32)
+            self.observation_space = gspc.Box(low=-np.inf, high=np.inf, shape=(7+nrandfeatures,), dtype=np.float32)
         self.viewer = None
+
+        # nonstationarities
         self.random_gravity = None
         self.random_speed = None
+        self.gNS = False  # TODO think about how to integrate all nonstationarities
+        self.hNS = False
+        self.sNS = False
+        self.fNS = False
+
         self.nonstationary = nonstationary
 
+        # n rand features
+        self.nrandfeat = nrandfeatures
+
         def step(a):
+            if self.hNS:
+                # a = decay(a)  # TODO implement function, that recursively computes the the resulting flap power. (0-1)
+                pass  # TODO: pass real value to act function --> it is then treated in environment
             reward = self.game_state.act(self._action_set[a])
             state = self.game_state.getGameState()
+            # TODO extend state by random uninformative feature(s), do that in all other step functions
             terminal = self.game_state.game_over()
             return state, reward, terminal, {}
 
-        def non_stat_step(a):
+        def sfNS_step(a):
             reward = self.game_state.act(self._action_set[a])
             state = self.game_state.getGameState()
             terminal = self.game_state.game_over()
@@ -72,12 +86,61 @@ class PLEEnv_state(gym.Env):
                 background_speed = self.random_speed.points_list.pop()
                 self._update_background_speed(background_speed)
 
+        def sNS_step(a):
+            reward = self.game_state.act(self._action_set[a])
+            state = self.game_state.getGameState()
+            terminal = self.game_state.game_over()
+
+            if terminal:
+                # Do we need to generate new samples?
+                if (len(self.random_gravity.points_list) < 1) or (len(self.random_speed.points_list) < 1):
+                    self.random_gravity.add_random_points()
+
+                # Set GRAVITY and speed of new episode here
+                gravity = self.random_gravity.points_list.pop()
+                self._update_gravity(gravity)
+
+        def fNS_step(a):
+            reward = self.game_state.act(self._action_set[a])
+            state = self.game_state.getGameState()
+            terminal = self.game_state.game_over()
+
+            if terminal:
+                # Do we need to generate new samples?
+                if (len(self.random_gravity.points_list) < 1) or (len(self.random_speed.points_list) < 1):
+                    self.random_speed.add_random_points()
+
+                # Set GRAVITY and speed of new episode here
+                background_speed = self.random_speed.points_list.pop()
+                self._update_background_speed(background_speed)
+
             return state, reward, terminal, {}
 
-        if self.nonstationary:
-            self.step = non_stat_step
+        if nonstationary == 'sNS':
+            self.sNS = True
+            self.fNS = False
+            self.step = sNS_step
+
+            # which parameter?
+            self.update_param = self._update_gravity
+            # slow or fast?
+            self.param_traj = Overlayed_RandomSines(nsamples=5000, offset=1., amplitude=0.1, fband=[0.006, 0.01])
+            self.param_traj.add_random_points()
+        elif nonstationary == 'fNS':
+            self.sNS = False
+            self.fNS = True
+            self.step = fNS_step
+        elif nonstationary == 'sfNS':
+            self.sNS = True
+            self.fNS = True
+            self.step = sfNS_step
         else:
             self.step = step
+
+        # if self.nonstationary:
+        #     self.step = non_stat_step
+        # else:
+        # self.step = step
 
     def _get_image(self):
         image_rotated = np.fliplr(
@@ -115,9 +178,10 @@ class PLEEnv_state(gym.Env):
         self.game_state.rng = rng
         self.game_state.game.rng = self.game_state.rng
         self.game_state.init()
-        if self.nonstationary:
+        if self.sNS:
             self.random_gravity = Overlayed_RandomSines(nsamples=5000, offset=1., amplitude=0.1, fband=[0.006, 0.01])
             self.random_gravity.add_random_points()
+        if self.fNS:
             self.random_speed = RandomSteps(nsamples=5000, time_interval=[5, 20],
                                             value_interval=[3, 6])  # upper bound is excluded  # TODO set ttrace_length
             self.random_speed.add_random_points()
@@ -127,31 +191,6 @@ class PLEEnv_state(gym.Env):
 
     def _update_background_speed(self, speed):
         self.game.set_speed(speed)
-
-
-
-# class Simulator():
-#     def __init__(self, contmean, amplitude, contperiod, discrmean, discrperiod):
-#         # Create continuous random line
-#         n_screens = options.run_time * 60 * options.speed
-#         self.amplitude = options.amplitude
-#         self.trace_length = int((n_screens + 1) * options.screenSize[0])
-#         point_list = np.stack((np.linspace(0, 1 + n_screens, self.trace_length),
-#                                0.5 + np.random.randn(self.trace_length))).T
-#
-#         # filter random signal
-#         filter_order = 4
-#         wn = np.array([2, 20], dtype=float) / 1300
-#         b, a = spsig.butter(filter_order, wn, btype='bandpass',
-#                             analog=False, output='ba')
-#
-#         point_list[:, 1] = spsig.lfilter(b, a, point_list[:, 1]) + 0.5
-#         point_list[:, 1] = [(0.5 + (self.sigmoid(item[1] - 0.5))) for item in point_list]
-#         self.point_list = point_list[0::10]
-
-        # Create continuous sinus line
-
-        # Create discrete random line
 
 
 class Filtered_RandomWalk():
@@ -172,6 +211,9 @@ class Filtered_RandomWalk():
         # plt.figure()
         # plt.plot(self.points_list, 'r')
         # plt.show()
+
+    def get_next_value(self):
+        return self.points_list.pop()
 
 
 class Overlayed_RandomSines():
@@ -209,6 +251,9 @@ class Overlayed_RandomSines():
         # plt.ylabel('gravity')
         # plt.xlabel('episode index')
         # plt.show()
+
+    def get_next_value(self):
+        return self.points_list.pop()
 
 
 class RandomSteps():
