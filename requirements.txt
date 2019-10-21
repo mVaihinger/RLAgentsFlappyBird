@@ -41,4 +41,4 @@ traits==4.6.0
 traitsui==5.1.0
 urllib3==1.22
 vtk==8.1.0
-Werkzeug==0.14.1
+Werkzeug==0.15.3
