@@ -18,7 +18,7 @@ mne==0.15.2
 nibabel==2.2.1
 numpy==1.14.0
 pandas==0.22.0
-Pillow==5.0.0
+Pillow==9.0.1
 -e git+https://github.com/ntasfi/PyGame-Learning-Environment@50aa299a3b519029f3fd123b4cce6d34edbfa0dc#egg=ple
 protobuf==3.5.1
 pyface==5.1.0
