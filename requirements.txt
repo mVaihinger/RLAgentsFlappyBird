@@ -16,7 +16,7 @@ matplotlib==2.1.2
 mayavi==4.5.0
 mne==0.15.2
 nibabel==2.2.1
-numpy==1.14.0
+numpy==1.22.0
 pandas==0.22.0
 Pillow==5.0.0
 -e git+https://github.com/ntasfi/PyGame-Learning-Environment@50aa299a3b519029f3fd123b4cce6d34edbfa0dc#egg=ple
