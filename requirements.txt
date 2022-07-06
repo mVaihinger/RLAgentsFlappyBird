@@ -8,7 +8,7 @@ cycler==0.10.0
 future==0.16.0
 -e git+https://github.com/openai/gym@efeadfdd20992aeba69e038205af90d340c5f95b#egg=gym
 -e git+https://github.com/lusob/gym-ple.git@fbcd225a74d0a46ad03c9c65f874e7eed7066963#egg=gym_ple
-html5lib==0.9999999
+html5lib==0.999999999
 idna==2.6
 Keras==2.1.4
 Markdown==2.6.11
