@@ -20,7 +20,7 @@ numpy==1.14.0
 pandas==0.22.0
 Pillow==5.0.0
 -e git+https://github.com/ntasfi/PyGame-Learning-Environment@50aa299a3b519029f3fd123b4cce6d34edbfa0dc#egg=ple
-protobuf==3.5.1
+protobuf==3.18.3
 pyface==5.1.0
 pygame==1.9.3
 pyglet==1.3.1
